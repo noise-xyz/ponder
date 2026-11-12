@@ -69,6 +69,7 @@ import { startClock } from "@/utils/timer.js";
 import {
   getFactoryBloom,
   getLogFilterBloom,
+  isAnyChildInBloom,
   isFactoryInBloom,
   isFilterInBloom,
   isInBloom,
@@ -191,6 +192,41 @@ export const createRealtimeSync = (
 
   const logFilterBlooms = logFilters.map(getLogFilterBloom);
   const factoryBlooms = factories.map(getFactoryBloom);
+  const factoryBloomsById = new Map(
+    factories.map((factory, i) => [factory.id, factoryBlooms[i]!]),
+  );
+
+  /**
+   * Return true if a log of `factory`'s children can be in `bloom`: a known child
+   * is in it, or the factory can announce a new child in the same block.
+   */
+  const isFactoryChildInBloom = (
+    factory: Factory,
+    bloom: Uint8Array,
+    blockNumber: number,
+  ) => {
+    const factoryBloom = factoryBloomsById.get(factory.id);
+
+    return (
+      (factoryBloom !== undefined &&
+        isFactoryInBloom({ bloom, factory: factoryBloom })) ||
+      isAnyChildInBloom({
+        bloom,
+        children: childAddresses.get(factory.id) ?? new Map(),
+        blockNumber,
+      })
+    );
+  };
+
+  const isLogFilterChildInBloom = (
+    filter: LogFilter,
+    bloom: Uint8Array,
+    blockNumber: number,
+  ) =>
+    (isAddressFactory(filter.address) === false ||
+      isFactoryChildInBloom(filter.address, bloom, blockNumber)) &&
+    (filter.childTopic === undefined ||
+      isFactoryChildInBloom(filter.childTopic.factory, bloom, blockNumber));
 
   const getLatestUnfinalizedBlock = () => {
     if (unfinalizedBlocks.length === 0) {
@@ -239,7 +275,8 @@ export const createRealtimeSync = (
           isBlockInFilter(logFilter, blockNumber) &&
           (isAsyncExecution ||
             maybeBlockHeader.logsBloom === zeroLogsBloom ||
-            isFilterInBloom({ bloom, filter: logFilterBlooms[i]! })),
+            (isFilterInBloom({ bloom, filter: logFilterBlooms[i]! }) &&
+              isLogFilterChildInBloom(logFilter, bloom, blockNumber))),
       ),
       factories: factories.filter(
         (factory, i) =>
@@ -250,24 +287,30 @@ export const createRealtimeSync = (
       ),
     });
     const shouldRequestLogs = logsRequestFilter !== undefined;
+    const logsRequestParams =
+      logsRequestFilter === undefined
+        ? undefined
+        : {
+            blockHash: maybeBlockHeader.hash,
+            address: logsRequestFilter.address,
+            topics: logsRequestFilter.topics,
+          };
 
     let logs: SyncLog[] = [];
-    if (shouldRequestLogs) {
-      const logsRequestParams = {
-        blockHash: maybeBlockHeader.hash,
-        address: logsRequestFilter.address,
-        topics: logsRequestFilter.topics,
-      };
-
-      if (block === undefined) {
-        [block, logs] = await Promise.all([
-          eth_getBlockByHash(args.rpc, [maybeBlockHeader.hash, true], context),
-          eth_getLogs(args.rpc, [logsRequestParams], context),
-        ]);
-      } else {
-        logs = await eth_getLogs(args.rpc, [logsRequestParams], context);
+    if (logsRequestParams !== undefined) {
+      // The full block is fetched only when the block has logs, so a block whose
+      // bloom is a false positive costs one request.
+      logs = await eth_getLogs(args.rpc, [logsRequestParams], context);
+      if (block === undefined && logs.length > 0) {
+        block = await eth_getBlockByHash(
+          args.rpc,
+          [maybeBlockHeader.hash, true],
+          context,
+        );
       }
+    }
 
+    if (logsRequestParams !== undefined && block !== undefined) {
       validateLogsAndBlock(
         logs,
         block,

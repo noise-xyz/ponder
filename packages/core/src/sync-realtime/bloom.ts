@@ -122,6 +122,8 @@ export function isFilterInBloom({
 export type FactoryBloom = {
   address: BloomBits[] | undefined;
   eventSelector: BloomBits;
+  /** The factory's `filter` topics. */
+  topics: (BloomBits | undefined)[];
 };
 
 /**
@@ -131,6 +133,9 @@ export type FactoryBloom = {
 export const getFactoryBloom = (factory: Factory): FactoryBloom => ({
   address: toBloomBits(factory.address),
   eventSelector: getBloomBits(factory.eventSelector),
+  topics: (factory.topics ?? []).map((topic) =>
+    topic === null ? undefined : getBloomBits(topic),
+  ),
 });
 
 /**
@@ -147,6 +152,40 @@ export function isFactoryInBloom({
 }): boolean {
   return (
     isAnyInBloom(bloom, factory.address) &&
-    isBloomBitsInBloom(bloom, factory.eventSelector)
+    isBloomBitsInBloom(bloom, factory.eventSelector) &&
+    factory.topics.every(
+      (topic) => topic === undefined || isBloomBitsInBloom(bloom, topic),
+    )
   );
+}
+
+const childBloomBits = new Map<Hex, BloomBits>();
+
+/**
+ * Return true if a child in `children` born at or before `blockNumber` can be
+ * in `bloom`. A child is an address or a topic value; each is hashed once.
+ *
+ * Note: False positives are possible.
+ */
+export function isAnyChildInBloom({
+  bloom,
+  children,
+  blockNumber,
+}: {
+  bloom: Uint8Array;
+  children: Map<Hex, number>;
+  blockNumber: number;
+}): boolean {
+  for (const [child, childBlockNumber] of children) {
+    if (childBlockNumber > blockNumber) continue;
+
+    let bits = childBloomBits.get(child);
+    if (bits === undefined) {
+      bits = getBloomBits(child);
+      childBloomBits.set(child, bits);
+    }
+    if (isBloomBitsInBloom(bloom, bits)) return true;
+  }
+
+  return false;
 }
