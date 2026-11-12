@@ -331,9 +331,12 @@ export const createBuild = async ({
       } as const;
     },
     async executeIndexingFunctions(): Promise<IndexingResult> {
-      const files = glob.sync(indexingPattern, {
-        ignore: [apiPattern, testFilePattern],
-      });
+      // Sorted so the build id, which hashes files in execution order, is stable.
+      const files = glob
+        .sync(indexingPattern, {
+          ignore: [apiPattern, testFilePattern],
+        })
+        .sort();
 
       for (const file of files) {
         const executeResult = await executeFileWithTimeout({ file });

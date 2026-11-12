@@ -1,4 +1,4 @@
-import type { Address, Hex } from "viem";
+import type { Address, Hex, LogTopic } from "viem";
 import type {
   BlockFilter,
   Factory,
@@ -8,7 +8,9 @@ import type {
   Fragment,
   FragmentAddress,
   FragmentAddressId,
+  FragmentFactory,
   FragmentId,
+  FragmentTopic,
   LogFilter,
   TraceFilter,
   TransactionFilter,
@@ -25,6 +27,54 @@ export const isFragmentAddressFactory = (
   if (typeof fragmentAddress === "string") return false;
   return true;
 };
+
+/**
+ * Encodes a factory's event selector and `filter` topics as one ID segment. A
+ * factory without a filter keeps the bare selector, so existing IDs stay valid.
+ */
+const encodeFactoryEvent = ({
+  eventSelector,
+  topics,
+}: {
+  eventSelector: Hex;
+  topics?: Factory["topics"];
+}): string =>
+  topics === undefined
+    ? eventSelector
+    : [eventSelector, ...topics.map((topic) => topic ?? "null")].join(":");
+
+const decodeFactoryEvent = (
+  segment: string,
+): { eventSelector: Hex; topics?: Factory["topics"] } => {
+  const [eventSelector, ...topics] = segment.split(":");
+  return topics.length === 0
+    ? { eventSelector: eventSelector as Hex }
+    : {
+        eventSelector: eventSelector as Hex,
+        topics: topics.map((topic) =>
+          topic === "null" ? null : (topic as Hex),
+        ) as Factory["topics"],
+      };
+};
+
+const toFragmentFactory = (factory: Factory, address: Address | null) =>
+  ({
+    address,
+    eventSelector: factory.eventSelector,
+    ...(factory.topics === undefined ? {} : { topics: factory.topics }),
+    childAddressLocation: factory.childAddressLocation,
+    fromBlock: factory.fromBlock ?? null,
+    toBlock: factory.toBlock ?? null,
+  }) satisfies FragmentFactory;
+
+/** The static part of a log fragment topic. A child topic has none. */
+const staticTopic = (topic: FragmentTopic): Hex | null =>
+  typeof topic === "string" ? topic : null;
+
+const fragmentTopicToId = (topic: FragmentTopic): string =>
+  topic === null || typeof topic === "string"
+    ? `${topic}`
+    : `${fragmentAddressToId(topic)}`;
 
 type FragmentReturnType = {
   fragment: Fragment;
@@ -57,6 +107,7 @@ export const getFactoryFragments = (factory: Factory): Fragment[] => {
       chainId: factory.chainId,
       address: fragmentAddress ?? null,
       eventSelector: factory.eventSelector,
+      ...(factory.topics === undefined ? {} : { topics: factory.topics }),
       childAddressLocation: factory.childAddressLocation,
       fromBlock: factory.fromBlock ?? null,
       toBlock: factory.toBlock ?? null,
@@ -84,6 +135,7 @@ export const getFactoryFragmentId = (
     chainId: factory.chainId,
     address: factory.address === undefined ? null : toLowerCase(parentAddress),
     eventSelector: factory.eventSelector,
+    ...(factory.topics === undefined ? {} : { topics: factory.topics }),
     childAddressLocation: factory.childAddressLocation,
     fromBlock: factory.fromBlock ?? null,
     toBlock: factory.toBlock ?? null,
@@ -101,13 +153,7 @@ export const getAddressFragments = (
     for (const fragmentAddress of Array.isArray(address.address)
       ? address.address
       : [address.address]) {
-      const fragment = {
-        address: fragmentAddress ?? null,
-        eventSelector: address.eventSelector,
-        childAddressLocation: address.childAddressLocation,
-        fromBlock: address.fromBlock ?? null,
-        toBlock: address.toBlock ?? null,
-      } satisfies FragmentAddress;
+      const fragment = toFragmentFactory(address, fragmentAddress ?? null);
 
       fragments.push({
         fragment,
@@ -235,21 +281,42 @@ export const getLogFilterFragments = ({
   chainId,
   address,
   topic0,
-  topic1,
-  topic2,
-  topic3,
+  topic1: staticTopic1,
+  topic2: staticTopic2,
+  topic3: staticTopic3,
+  childTopic,
   ...filter
 }: Omit<LogFilter, "fromBlock" | "toBlock">): FragmentReturnType => {
   const fragments: FragmentReturnType = [];
   const addressFragments = getAddressFragments(address);
   const eventSelector = topic0;
 
+  // A child topic is one fragment per parent address of its factory. Only the
+  // same factory's coverage satisfies it.
+  const childTopicFragments = (index: 1 | 2 | 3, staticValue: LogTopic) =>
+    childTopic?.index === index
+      ? (Array.isArray(childTopic.factory.address)
+          ? childTopic.factory.address
+          : [childTopic.factory.address ?? null]
+        ).map((parent) => toFragmentFactory(childTopic.factory, parent))
+      : Array.isArray(staticValue)
+        ? staticValue
+        : [staticValue];
+
+  const topic1 = childTopicFragments(1, staticTopic1);
+  const topic2 = childTopicFragments(2, staticTopic2);
+  const topic3 = childTopicFragments(3, staticTopic3);
+  const adjacentTopics = (topic: FragmentTopic | undefined): string[] =>
+    topic === null || topic === undefined
+      ? ["null"]
+      : typeof topic === "string"
+        ? [topic, "null"]
+        : [fragmentTopicToId(topic)];
+
   for (const addressFragment of addressFragments) {
-    for (const fragmentTopic1 of Array.isArray(topic1) ? topic1 : [topic1]) {
-      for (const fragmentTopic2 of Array.isArray(topic2) ? topic2 : [topic2]) {
-        for (const fragmentTopic3 of Array.isArray(topic3)
-          ? topic3
-          : [topic3]) {
+    for (const fragmentTopic1 of topic1) {
+      for (const fragmentTopic2 of topic2) {
+        for (const fragmentTopic3 of topic3) {
           const fragment = {
             type: "log",
             chainId,
@@ -264,20 +331,14 @@ export const getLogFilterFragments = ({
           const adjacentIds: FragmentId[] = [];
 
           for (const addressAdjacentId of addressFragment.adjacentIds) {
-            for (const adjacentTopic1 of fragmentTopic1
-              ? [fragmentTopic1, null]
-              : [null]) {
-              for (const adjacentTopic2 of fragmentTopic2
-                ? [fragmentTopic2, null]
-                : [null]) {
-                for (const adjacentTopic3 of fragmentTopic3
-                  ? [fragmentTopic3, null]
-                  : [null]) {
+            for (const adjacentTopic1 of adjacentTopics(fragmentTopic1)) {
+              for (const adjacentTopic2 of adjacentTopics(fragmentTopic2)) {
+                for (const adjacentTopic3 of adjacentTopics(fragmentTopic3)) {
                   for (const adjacentTxr of filter.hasTransactionReceipt
                     ? [1]
                     : [0, 1]) {
                     adjacentIds.push(
-                      `log_${chainId}_${addressAdjacentId}_${eventSelector}_${adjacentTopic1}_${adjacentTopic2}_${adjacentTopic3}_${adjacentTxr as 0 | 1}`,
+                      `log_${chainId}_${addressAdjacentId}_${eventSelector}_${adjacentTopic1}_${adjacentTopic2}_${adjacentTopic3}_${adjacentTxr as 0 | 1}` as FragmentId,
                     );
                   }
                 }
@@ -342,7 +403,7 @@ export const fragmentAddressToId = (
 ): FragmentAddressId => {
   if (fragmentAddress === null) return null;
   if (typeof fragmentAddress === "string") return fragmentAddress;
-  return `${fragmentAddress.address}_${fragmentAddress.eventSelector}_${fragmentAddress.childAddressLocation}_${fragmentAddress.fromBlock}_${fragmentAddress.toBlock}`;
+  return `${fragmentAddress.address}_${encodeFactoryEvent(fragmentAddress)}_${fragmentAddress.childAddressLocation}_${fragmentAddress.fromBlock}_${fragmentAddress.toBlock}` as FragmentAddressId;
 };
 
 export const encodeFragment = (fragment: Fragment): FragmentId => {
@@ -354,11 +415,11 @@ export const encodeFragment = (fragment: Fragment): FragmentId => {
     case "trace":
       return `trace_${fragment.chainId}_${fragmentAddressToId(fragment.fromAddress)}_${fragmentAddressToId(fragment.toAddress)}_${fragment.functionSelector}_${fragment.includeTransactionReceipts ? 1 : 0}`;
     case "log":
-      return `log_${fragment.chainId}_${fragmentAddressToId(fragment.address)}_${fragment.topic0}_${fragment.topic1}_${fragment.topic2}_${fragment.topic3}_${fragment.includeTransactionReceipts ? 1 : 0}`;
+      return `log_${fragment.chainId}_${fragmentAddressToId(fragment.address)}_${fragment.topic0}_${fragmentTopicToId(fragment.topic1)}_${fragmentTopicToId(fragment.topic2)}_${fragmentTopicToId(fragment.topic3)}_${fragment.includeTransactionReceipts ? 1 : 0}`;
     case "transfer":
       return `transfer_${fragment.chainId}_${fragmentAddressToId(fragment.fromAddress)}_${fragmentAddressToId(fragment.toAddress)}_${fragment.includeTransactionReceipts ? 1 : 0}`;
     case "factory_log":
-      return `factory_log_${fragment.chainId}_${fragment.address}_${fragment.eventSelector}_${fragment.childAddressLocation}_${fragment.fromBlock}_${fragment.toBlock}`;
+      return `factory_log_${fragment.chainId}_${fragment.address}_${encodeFactoryEvent(fragment)}_${fragment.childAddressLocation}_${fragment.fromBlock}_${fragment.toBlock}`;
   }
 };
 
@@ -373,14 +434,15 @@ export const decodeFragment = (fragmentId: FragmentId): Fragment => {
     if (
       fragmentAddressId.length >= 3 &&
       (fragmentAddressId[2]!.startsWith("topic") ||
-        fragmentAddressId[2]!.startsWith("offset"))
+        fragmentAddressId[2]!.startsWith("offset") ||
+        fragmentAddressId[2]!.startsWith("child:"))
     ) {
       return {
         address:
           fragmentAddressId[0] === "null"
             ? null
             : (fragmentAddressId[0] as Address),
-        eventSelector: fragmentAddressId[1] as Hex,
+        ...decodeFactoryEvent(fragmentAddressId[1]!),
         childAddressLocation:
           fragmentAddressId[2] as Factory["childAddressLocation"],
         fromBlock:
@@ -569,7 +631,7 @@ export const decodeFragment = (fragmentId: FragmentId): Fragment => {
         type: "factory_log",
         chainId: Number(chainId),
         address: address as Address,
-        eventSelector: eventSelector as Factory["eventSelector"],
+        ...decodeFactoryEvent(eventSelector!),
         childAddressLocation:
           childAddressLocation as Factory["childAddressLocation"],
         fromBlock: fromBlock ? Number(fromBlock) : null,
@@ -676,23 +738,26 @@ export const recoverFilter = (
         topic0: baseFilter.topic0,
         topic1: recoverTopic(
           baseFilter.topic1,
-          fragments.map(
-            (fragment) =>
+          fragments.map((fragment) =>
+            staticTopic(
               (fragment as Extract<Fragment, { type: "log" }>).topic1,
+            ),
           ),
         ),
         topic2: recoverTopic(
           baseFilter.topic2,
-          fragments.map(
-            (fragment) =>
+          fragments.map((fragment) =>
+            staticTopic(
               (fragment as Extract<Fragment, { type: "log" }>).topic2,
+            ),
           ),
         ),
         topic3: recoverTopic(
           baseFilter.topic3,
-          fragments.map(
-            (fragment) =>
+          fragments.map((fragment) =>
+            staticTopic(
               (fragment as Extract<Fragment, { type: "log" }>).topic3,
+            ),
           ),
         ),
       };

@@ -2,6 +2,7 @@ import {
   type Address,
   type Hash,
   hexToNumber,
+  type LogTopic,
   numberToHex,
   toHex,
   zeroHash,
@@ -34,6 +35,7 @@ import {
   syncTransactionReceiptToInternal,
   syncTransactionToInternal,
 } from "@/runtime/events.js";
+import { getFactoryChildren } from "@/runtime/factory-child.js";
 import {
   getChildAddress,
   getFilterFactories,
@@ -42,6 +44,7 @@ import {
   isBlockFilterMatched,
   isBlockInFilter,
   isLogFactoryMatched,
+  isLogFilterChildMatched,
   isLogFilterMatched,
   isTraceFilterMatched,
   isTransactionFilterMatched,
@@ -109,7 +112,10 @@ export function createInMemoryHistoricalSync(params: {
           [
             {
               address: factory.address,
-              topics: [factory.eventSelector],
+              topics: sanitizeLogTopics([
+                factory.eventSelector,
+                ...(factory.topics ?? []),
+              ]),
               fromBlock: numberToHex(interval[0]),
               toBlock: numberToHex(interval[1]),
             },
@@ -120,13 +126,24 @@ export function createInMemoryHistoricalSync(params: {
           },
         )) {
           let childAddressCount = 0;
+          const children = await getFactoryChildren({
+            factory,
+            logs: page.logs,
+            rpc: params.rpc,
+            context,
+          });
 
           for (const log of page.logs) {
             if (isLogFactoryMatched({ factory, log }) === false) continue;
 
             let address: Address;
             try {
-              address = getChildAddress({ log, factory });
+              const child =
+                factory.child === undefined
+                  ? getChildAddress({ log, factory })
+                  : children.get(log);
+              if (child === undefined) continue;
+              address = child;
             } catch (error) {
               if (factory.address !== undefined) throw error;
               params.common.logger.debug({
@@ -267,7 +284,7 @@ export function createInMemoryHistoricalSync(params: {
 
                 for await (const factoryInterval of paginateFactoryDependencies(
                   interval,
-                  factory ? [factory.id] : [],
+                  getFilterFactories(filter).map(({ id }) => id),
                 )) {
                   let address: Address | Address[] | undefined;
                   if (factory) {
@@ -286,18 +303,33 @@ export function createInMemoryHistoricalSync(params: {
                     address = filter.address as Address | Address[] | undefined;
                   }
 
+                  // Children of a child topic are never dropped above the threshold.
+                  const topics: LogTopic[] = [
+                    filter.topic0,
+                    filter.topic1 ?? null,
+                    filter.topic2 ?? null,
+                    filter.topic3 ?? null,
+                  ];
+                  if (filter.childTopic !== undefined) {
+                    const children = params.childAddress.get(
+                      filter.childTopic.factory.id,
+                    )!;
+                    if (children.size === 0) {
+                      yield factoryInterval;
+                      continue;
+                    }
+                    topics[filter.childTopic.index] = Array.from(
+                      children.keys(),
+                    );
+                  }
+
                   let endClock = startClock();
                   for await (const page of eth_getLogsWithPagination(
                     params.rpc,
                     [
                       {
                         address,
-                        topics: sanitizeLogTopics([
-                          filter.topic0,
-                          filter.topic1 ?? null,
-                          filter.topic2 ?? null,
-                          filter.topic3 ?? null,
-                        ]),
+                        topics: sanitizeLogTopics(topics),
                         fromBlock: numberToHex(factoryInterval[0]),
                         toBlock: numberToHex(factoryInterval[1]),
                       },
@@ -440,15 +472,12 @@ export function createInMemoryHistoricalSync(params: {
             for (const filter of logFilters) {
               if (
                 isLogFilterMatched({ filter, log }) &&
-                (isAddressFactory(filter.address)
-                  ? isAddressMatched({
-                      address: log.address,
-                      blockNumber,
-                      childAddresses: params.childAddress.get(
-                        filter.address.id,
-                      )!,
-                    })
-                  : true)
+                isLogFilterChildMatched({
+                  filter,
+                  log,
+                  blockNumber,
+                  childAddresses: params.childAddress,
+                })
               ) {
                 isMatched = true;
 

@@ -35,7 +35,12 @@ import {
   validateTracesAndBlock,
   validateTransactionsAndBlock,
 } from "@/rpc/actions.js";
-import type { RequestParameters, Rpc } from "@/rpc/index.js";
+import {
+  type RequestParameters,
+  type Rpc,
+  sanitizeLogTopics,
+} from "@/rpc/index.js";
+import { getFactoryChildren } from "@/runtime/factory-child.js";
 import {
   getChildAddress,
   isAddressFactory,
@@ -43,6 +48,7 @@ import {
   isBlockFilterMatched,
   isBlockInFilter,
   isLogFactoryMatched,
+  isLogFilterChildMatched,
   isLogFilterMatched,
   isTraceFilterMatched,
   isTransactionFilterMatched,
@@ -228,12 +234,22 @@ export const createHistoricalSync = (
     const logs = await syncLogsDynamic(
       {
         address: factory.address,
-        topics: [factory.eventSelector],
+        topics: sanitizeLogTopics([
+          factory.eventSelector,
+          ...(factory.topics ?? []),
+        ]),
         fromBlock: numberToHex(interval[0]),
         toBlock: numberToHex(interval[1]),
       },
       context,
     );
+
+    const children = await getFactoryChildren({
+      factory,
+      logs,
+      rpc: args.rpc,
+      context,
+    });
 
     const childAddresses = new Map<FactoryFragmentId, Map<Address, number>>();
     const factoryChildAddresses = args.childAddresses.get(factory.id)!;
@@ -246,7 +262,12 @@ export const createHistoricalSync = (
       if (isLogFactoryMatched({ factory, log })) {
         let address: Address;
         try {
-          address = getChildAddress({ log, factory });
+          const child =
+            factory.child === undefined
+              ? getChildAddress({ log, factory })
+              : children.get(log);
+          if (child === undefined) continue;
+          address = child;
           childAddressDecodeSuccessCount++;
         } catch (error) {
           if (factory.address === undefined) {
@@ -510,15 +531,12 @@ export const createHistoricalSync = (
             for (const filter of logFilters) {
               if (
                 isLogFilterMatched({ filter, log }) &&
-                (isAddressFactory(filter.address)
-                  ? isAddressMatched({
-                      address: log.address,
-                      blockNumber,
-                      childAddresses: args.childAddresses.get(
-                        filter.address.id,
-                      )!,
-                    })
-                  : true)
+                isLogFilterChildMatched({
+                  filter,
+                  log,
+                  blockNumber,
+                  childAddresses: args.childAddresses,
+                })
               ) {
                 isMatched = true;
 

@@ -10,7 +10,7 @@ import {
   toEventSelector,
   toFunctionSelector,
 } from "viem";
-import type { Factory } from "@/config/address.js";
+import type { Factory, Factory as FactoryConfig } from "@/config/address.js";
 import type { Config } from "@/config/index.js";
 import type { Common } from "@/internal/common.js";
 import { BuildError } from "@/internal/errors.js";
@@ -103,6 +103,13 @@ const validateAddresses = ({
       );
   }
 };
+
+/** Returns `true` if a contract filter argument is a factory config. */
+const isFactoryConfig = (value: unknown): value is FactoryConfig =>
+  typeof value === "object" &&
+  value !== null &&
+  Array.isArray(value) === false &&
+  "event" in value;
 
 export async function buildIndexingFunctions({
   common,
@@ -488,6 +495,7 @@ export async function buildIndexingFunctions({
       Hex,
       ReturnType<typeof buildTopics>[number]
     >();
+    const childTopics = new Map<Hex, NonNullable<LogFilter["childTopic"]>>();
 
     if (source.filter) {
       const eventFilters = Array.isArray(source.filter)
@@ -511,7 +519,58 @@ export async function buildIndexingFunctions({
           );
         }
       }
-      const topics = buildTopics(source.abi, eventFilters);
+      // A factory argument becomes the filter's child topic. Its static topic is
+      // left unset, so `buildTopics` encodes only the other arguments.
+      const staticEventFilters = [] as typeof eventFilters;
+      for (const filter of eventFilters) {
+        const abiEvent = source.abi.find(
+          (item): item is AbiEvent =>
+            item.type === "event" &&
+            toSafeName({ abi: source.abi, item }) === filter.event,
+        )!;
+        const indexedInputs = abiEvent.inputs.filter(
+          (input) => input.indexed === true,
+        );
+        const args = { ...(filter.args as Record<string, unknown>) };
+
+        for (const [name, value] of Object.entries(args)) {
+          if (isFactoryConfig(value) === false) continue;
+
+          const index = indexedInputs.findIndex((input) => input.name === name);
+          if (index === -1) {
+            throw new Error(
+              `Validation failed: Invalid filter for contract '${source.name}'. Factory argument '${name}' is not an indexed parameter of event '${filter.event}'.`,
+            );
+          }
+          if (childTopics.has(toEventSelector(abiEvent))) {
+            throw new Error(
+              `Validation failed: Invalid filter for contract '${source.name}'. Event '${filter.event}' has more than one factory argument.`,
+            );
+          }
+
+          childTopics.set(toEventSelector(abiEvent), {
+            index: (index + 1) as 1 | 2 | 3,
+            factory: buildLogFactory({
+              chainId: chain.id,
+              sourceId: source.name,
+              ...value,
+              fromBlock:
+                (await resolveBlockNumber(value.startBlock, chain)) ??
+                fromBlock,
+              toBlock:
+                (await resolveBlockNumber(value.endBlock, chain)) ?? toBlock,
+            }),
+          });
+          args[name] = undefined;
+        }
+
+        staticEventFilters.push({
+          ...filter,
+          args,
+        } as (typeof eventFilters)[number]);
+      }
+
+      const topics = buildTopics(source.abi, staticEventFilters);
 
       for (const { topic0, topic1, topic2, topic3 } of topics) {
         const abiItem = source.abi.find(
@@ -608,6 +667,9 @@ export async function buildIndexingFunctions({
         topic1,
         topic2,
         topic3,
+        ...(childTopics.has(eventSelector)
+          ? { childTopic: childTopics.get(eventSelector)! }
+          : {}),
         fromBlock,
         toBlock,
         hasTransactionReceipt: source.includeTransactionReceipts ?? false,

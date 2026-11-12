@@ -41,6 +41,7 @@ import {
   validateTransactionsAndBlock,
 } from "@/rpc/actions.js";
 import type { Rpc } from "@/rpc/index.js";
+import { getFactoryChildren } from "@/runtime/factory-child.js";
 import {
   getChildAddress,
   getFilterFactories,
@@ -49,6 +50,7 @@ import {
   isBlockFilterMatched,
   isBlockInFilter,
   isLogFactoryMatched,
+  isLogFilterChildMatched,
   isLogFilterMatched,
   isTraceFilterMatched,
   isTransactionFilterMatched,
@@ -371,12 +373,25 @@ export const createRealtimeSync = (
     let childAddressDecodeSuccessCount = 0;
 
     for (const factory of factories) {
+      const children = await getFactoryChildren({
+        factory,
+        logs,
+        rpc: args.rpc,
+        blocks: block === undefined ? [] : [block],
+        context,
+      });
+
       for (const log of logs) {
         if (isLogFactoryMatched({ factory, log })) {
           factoryLogs.add(log);
           let address: Address;
           try {
-            address = getChildAddress({ log, factory });
+            const child =
+              factory.child === undefined
+                ? getChildAddress({ log, factory })
+                : children.get(log);
+            if (child === undefined) continue;
+            address = child;
             childAddressDecodeSuccessCount++;
           } catch (error) {
             if (factory.address === undefined) {
@@ -714,13 +729,12 @@ export const createRealtimeSync = (
       for (const filter of logFilters) {
         if (
           isLogFilterMatched({ filter, log }) &&
-          (isAddressFactory(filter.address)
-            ? isAddressMatched({
-                address: log.address,
-                blockNumber: hexToNumber(block.number),
-                childAddresses: childAddresses.get(filter.address.id)!,
-              })
-            : true)
+          isLogFilterChildMatched({
+            filter,
+            log,
+            blockNumber: hexToNumber(block.number),
+            childAddresses,
+          })
         ) {
           matchedFilters.add(filter);
           isMatched = true;

@@ -88,6 +88,14 @@ export type QB<
   );
 
 export const parseDbError = (error: any): Error => {
+  // drizzle-orm 0.44 and later wrap the driver error in `DrizzleQueryError`.
+  if (
+    error?.constructor?.name === "DrizzleQueryError" &&
+    error.cause instanceof Error
+  ) {
+    error = error.cause;
+  }
+
   const stack = error.stack;
 
   if (error instanceof BaseError) {
