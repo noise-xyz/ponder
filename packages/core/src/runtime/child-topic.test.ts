@@ -193,6 +193,43 @@ test("getFactoryChildren() reads each launch's transaction and receipt", async (
   expect(requests).toStrictEqual(["eth_getTransactionReceipt"]);
 });
 
+test("getFactoryChildren() reads a receipt once for factories that share it", async () => {
+  const transaction = {
+    hash: pad("0x11"),
+    from: parent,
+    to: target,
+    input: "0x",
+  };
+  const receipt = {
+    blockHash: pad("0x10"),
+    blockNumber: numberToHex(10),
+    transactionHash: pad("0x11"),
+    transactionIndex: "0x0",
+    from: parent,
+    status: "0x1",
+    logs: [],
+  };
+  const rpc = {
+    request: vi.fn(async () => receipt),
+  } as unknown as Rpc;
+  const blocks = [
+    { hash: pad("0x10"), transactions: [transaction] } as unknown as SyncBlock,
+  ];
+  const receipts = new Map();
+
+  for (const id of ["pools", "tokens"]) {
+    await getFactoryChildren({
+      factory: { ...factoryFor(), id },
+      logs: [logOf({})],
+      rpc,
+      blocks,
+      receipts,
+    });
+  }
+
+  expect(rpc.request).toHaveBeenCalledTimes(1);
+});
+
 test("getFactoryChildren() is empty for a factory without a child function", async () => {
   const factory = { ...factoryFor(), child: undefined };
   const rpc = { request: vi.fn() } as unknown as Rpc;

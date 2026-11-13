@@ -4,6 +4,7 @@ import type {
   SyncBlock,
   SyncLog,
   SyncTransaction,
+  SyncTransactionReceipt,
 } from "@/internal/types.js";
 import {
   eth_getBlockByHash,
@@ -19,19 +20,22 @@ import { isLogFactoryMatched } from "./filter.js";
  * that `factory` does not match are skipped. Empty for any other factory.
  *
  * @dev Reads each matched log's transaction and receipt. `blocks` supplies
- * transactions the caller already has; any other block is fetched once.
+ * transactions the caller already has; any other block is fetched once. Pass the
+ * same `receipts` to factories that share an event, so each receipt is read once.
  */
 export const getFactoryChildren = async ({
   factory,
   logs,
   rpc,
   blocks = [],
+  receipts = new Map(),
   context,
 }: {
   factory: Factory;
   logs: SyncLog[];
   rpc: Rpc;
   blocks?: SyncBlock[];
+  receipts?: Map<Hash, Promise<SyncTransactionReceipt>>;
   context?: Parameters<Rpc["request"]>[1];
 }): Promise<Map<SyncLog, Address | undefined>> => {
   const child = factory.child;
@@ -51,11 +55,18 @@ export const getFactoryChildren = async ({
     return blocksByHash.get(hash)!;
   };
 
+  const getReceipt = (hash: Hash) => {
+    if (receipts.has(hash) === false) {
+      receipts.set(hash, eth_getTransactionReceipt(rpc, [hash], context));
+    }
+    return receipts.get(hash)!;
+  };
+
   const children = await Promise.all(
     matchedLogs.map(async (log) => {
       const [block, receipt] = await Promise.all([
         getBlock(log.blockHash),
-        eth_getTransactionReceipt(rpc, [log.transactionHash], context),
+        getReceipt(log.transactionHash),
       ]);
 
       const transaction = block.transactions.find(

@@ -415,12 +415,15 @@ export const createRealtimeSync = (
     let childAddressDecodeFailureCount = 0;
     let childAddressDecodeSuccessCount = 0;
 
+    const receipts = new Map<Hash, Promise<SyncTransactionReceipt>>();
+
     for (const factory of factories) {
       const children = await getFactoryChildren({
         factory,
         logs,
         rpc: args.rpc,
         blocks: block === undefined ? [] : [block],
+        receipts,
         context,
       });
 
