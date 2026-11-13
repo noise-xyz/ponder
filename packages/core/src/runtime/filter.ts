@@ -118,6 +118,32 @@ const mergeLogFilterValue = <value extends Hex>(
       ];
 
 /**
+ * Returns the `eth_getLogs` topics of `filter`, with its child topic set to the
+ * factory's known children, or `undefined` if the factory has no child yet.
+ *
+ * @dev Children of a child topic are never dropped above
+ * `factoryAddressCountThreshold`: without them the request would match the
+ * event of every contract at the filter's address.
+ */
+export const getLogFilterTopics = (
+  filter: LogFilter,
+  childAddresses: ChildAddresses,
+): LogTopic[] | undefined => {
+  const topics: LogTopic[] = [
+    filter.topic0,
+    filter.topic1 ?? null,
+    filter.topic2 ?? null,
+    filter.topic3 ?? null,
+  ];
+  if (filter.childTopic === undefined) return sanitizeLogTopics(topics);
+
+  const children = childAddresses.get(filter.childTopic.factory.id)!;
+  if (children.size === 0) return undefined;
+  topics[filter.childTopic.index] = Array.from(children.keys());
+  return sanitizeLogTopics(topics);
+};
+
+/**
  * Merge `LogFilter`s into the smallest possible set of "eth_getLogs" requests.
  *
  * @dev Two filters are merged into a single request when:
@@ -154,27 +180,15 @@ export const mergeLogFiltersToRequests = (
       address = filter.address;
     }
 
-    // Children of a child topic are never dropped above
-    // `factoryAddressCountThreshold`: without them the request would match the
-    // event of every contract at `address`.
-    const topics: LogTopic[] = [
-      filter.topic0,
-      filter.topic1 ?? null,
-      filter.topic2 ?? null,
-      filter.topic3 ?? null,
-    ];
-    if (filter.childTopic !== undefined) {
-      const children = childAddresses.get(filter.childTopic.factory.id)!;
-      if (children.size === 0) continue;
-      topics[filter.childTopic.index] = Array.from(children.keys());
-    }
+    const topics = getLogFilterTopics(filter, childAddresses);
+    if (topics === undefined) continue;
 
     const candidate: EthGetLogsRequest = {
       method: "eth_getLogs",
       params: [
         {
           address,
-          topics: sanitizeLogTopics(topics),
+          topics,
           fromBlock: numberToHex(interval[0]),
           toBlock: numberToHex(interval[1]),
         },
@@ -341,6 +355,11 @@ export const getChildAddress = ({
   log: SyncLog;
   factory: Factory;
 }): Address => {
+  if (factory.childAddressLocation.startsWith("child:")) {
+    throw new Error(
+      `Factory '${factory.sourceId}' has a 'child' function; its children are not in the log.`,
+    );
+  }
   if (factory.childAddressLocation.startsWith("offset")) {
     const childAddressOffset = Number(
       factory.childAddressLocation.substring(6),

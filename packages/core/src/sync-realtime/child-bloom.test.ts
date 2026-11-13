@@ -1,7 +1,8 @@
 import { type Hex, hexToBytes, keccak256, pad, toHex } from "viem";
 import { expect, test } from "vitest";
-import type { LogFactory } from "@/internal/types.js";
+import type { LogFactory, LogFilter } from "@/internal/types.js";
 import {
+  createLogFilterChildBloom,
   getFactoryBloom,
   isAnyChildInBloom,
   isFactoryInBloom,
@@ -61,20 +62,49 @@ test("isAnyChildInBloom() finds a known topic or address child born by the block
     [token, 12],
   ]);
 
+  const cache = new Map();
+  const inBloom = (values: Hex[], blockNumber: number) =>
+    isAnyChildInBloom({ bloom: bloomOf(values), children, blockNumber, cache });
+
+  expect(inBloom([pool], 10)).toBe(true);
+  expect(inBloom([token], 11)).toBe(false);
+  expect(inBloom([token], 12)).toBe(true);
+  expect(inBloom([pad("0x99")], 20)).toBe(false);
+});
+
+test("createLogFilterChildBloom() rules a block out only when every earlier child is known", () => {
+  const swapSelector = pad("0x5a");
+  const filter: LogFilter = {
+    type: "log",
+    chainId: 1,
+    sourceId: "Swaps",
+    address: token,
+    topic0: swapSelector,
+    topic1: null,
+    topic2: null,
+    topic3: null,
+    childTopic: { index: 1, factory },
+    fromBlock: undefined,
+    toBlock: undefined,
+    hasTransactionReceipt: false,
+    include: [],
+  };
+  const isLogFilterChildInBloom = createLogFilterChildBloom([factory]);
+  const childAddresses = new Map([["factory", new Map([[pool, 10]])]]);
+  const inBloom = (values: Hex[], known: typeof childAddresses | undefined) =>
+    isLogFilterChildInBloom({
+      filter,
+      bloom: bloomOf(values),
+      blockNumber: 11,
+      childAddresses: known,
+    });
+
+  expect(inBloom([token, swapSelector, pool], childAddresses)).toBe(true);
+  expect(inBloom([token, swapSelector, pad("0x99")], childAddresses)).toBe(
+    false,
+  );
+  expect(inBloom([token, swapSelector, pad("0x99")], undefined)).toBe(true);
   expect(
-    isAnyChildInBloom({ bloom: bloomOf([pool]), children, blockNumber: 10 }),
+    inBloom([token, swapSelector, parent, selector, usdc], childAddresses),
   ).toBe(true);
-  expect(
-    isAnyChildInBloom({ bloom: bloomOf([token]), children, blockNumber: 11 }),
-  ).toBe(false);
-  expect(
-    isAnyChildInBloom({ bloom: bloomOf([token]), children, blockNumber: 12 }),
-  ).toBe(true);
-  expect(
-    isAnyChildInBloom({
-      bloom: bloomOf([pad("0x99")]),
-      children,
-      blockNumber: 20,
-    }),
-  ).toBe(false);
 });

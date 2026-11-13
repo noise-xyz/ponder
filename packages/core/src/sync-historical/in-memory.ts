@@ -2,7 +2,6 @@ import {
   type Address,
   type Hash,
   hexToNumber,
-  type LogTopic,
   numberToHex,
   toHex,
   zeroHash,
@@ -37,8 +36,8 @@ import {
 } from "@/runtime/events.js";
 import { getFactoryChildren } from "@/runtime/factory-child.js";
 import {
-  getChildAddress,
   getFilterFactories,
+  getLogFilterTopics,
   isAddressFactory,
   isAddressMatched,
   isBlockFilterMatched,
@@ -126,7 +125,7 @@ export function createInMemoryHistoricalSync(params: {
           },
         )) {
           let childAddressCount = 0;
-          const children = await getFactoryChildren({
+          const childOf = await getFactoryChildren({
             factory,
             logs: page.logs,
             rpc: params.rpc,
@@ -138,10 +137,7 @@ export function createInMemoryHistoricalSync(params: {
 
             let address: Address;
             try {
-              const child =
-                factory.child === undefined
-                  ? getChildAddress({ log, factory })
-                  : children.get(log);
+              const child = childOf(log);
               if (child === undefined) continue;
               address = child;
             } catch (error) {
@@ -303,24 +299,13 @@ export function createInMemoryHistoricalSync(params: {
                     address = filter.address as Address | Address[] | undefined;
                   }
 
-                  // Children of a child topic are never dropped above the threshold.
-                  const topics: LogTopic[] = [
-                    filter.topic0,
-                    filter.topic1 ?? null,
-                    filter.topic2 ?? null,
-                    filter.topic3 ?? null,
-                  ];
-                  if (filter.childTopic !== undefined) {
-                    const children = params.childAddress.get(
-                      filter.childTopic.factory.id,
-                    )!;
-                    if (children.size === 0) {
-                      yield factoryInterval;
-                      continue;
-                    }
-                    topics[filter.childTopic.index] = Array.from(
-                      children.keys(),
-                    );
+                  const topics = getLogFilterTopics(
+                    filter,
+                    params.childAddress,
+                  );
+                  if (topics === undefined) {
+                    yield factoryInterval;
+                    continue;
                   }
 
                   let endClock = startClock();
@@ -329,7 +314,7 @@ export function createInMemoryHistoricalSync(params: {
                     [
                       {
                         address,
-                        topics: sanitizeLogTopics(topics),
+                        topics,
                         fromBlock: numberToHex(factoryInterval[0]),
                         toBlock: numberToHex(factoryInterval[1]),
                       },

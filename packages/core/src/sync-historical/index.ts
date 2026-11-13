@@ -42,7 +42,6 @@ import {
 } from "@/rpc/index.js";
 import { getFactoryChildren } from "@/runtime/factory-child.js";
 import {
-  getChildAddress,
   isAddressFactory,
   isAddressMatched,
   isBlockFilterMatched,
@@ -244,7 +243,7 @@ export const createHistoricalSync = (
       context,
     );
 
-    const children = await getFactoryChildren({
+    const childOf = await getFactoryChildren({
       factory,
       logs,
       rpc: args.rpc,
@@ -262,10 +261,7 @@ export const createHistoricalSync = (
       if (isLogFactoryMatched({ factory, log })) {
         let address: Address;
         try {
-          const child =
-            factory.child === undefined
-              ? getChildAddress({ log, factory })
-              : children.get(log);
+          const child = childOf(log);
           if (child === undefined) continue;
           address = child;
           childAddressDecodeSuccessCount++;

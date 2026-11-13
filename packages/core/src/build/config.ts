@@ -10,7 +10,7 @@ import {
   toEventSelector,
   toFunctionSelector,
 } from "viem";
-import type { Factory, Factory as FactoryConfig } from "@/config/address.js";
+import type { Factory as FactoryConfig } from "@/config/address.js";
 import type { Config } from "@/config/index.js";
 import type { Common } from "@/internal/common.js";
 import { BuildError } from "@/internal/errors.js";
@@ -111,6 +111,14 @@ const isFactoryConfig = (value: unknown): value is FactoryConfig =>
   Array.isArray(value) === false &&
   "event" in value;
 
+/**
+ * Returns `true` if an indexed parameter of `type` is stored in its topic as a
+ * 32-byte value, which a factory child must equal. Addresses are left out, as
+ * their topic is padded; dynamic types are left out, as their topic is a hash.
+ */
+const isTopicValueType = (type: string) =>
+  /^(bytes32|u?int\d*|bool)$/.test(type);
+
 export async function buildIndexingFunctions({
   common,
   config,
@@ -189,6 +197,39 @@ export async function buildIndexingFunctions({
     }
 
     return blockNumberOrTag;
+  };
+
+  /**
+   * Validate and build a factory of `sourceName`. The factory's own start and
+   * end blocks default to the source's `fromBlock` and `toBlock`.
+   *
+   * Note: This can throw.
+   */
+  const buildFactory = async ({
+    sourceName,
+    factory,
+    chain,
+    fromBlock,
+    toBlock,
+  }: {
+    sourceName: string;
+    factory: FactoryConfig;
+    chain: Chain;
+    fromBlock: number | undefined;
+    toBlock: number | undefined;
+  }) => {
+    if (factory.address !== undefined) {
+      validateAddresses({ sourceName, addresses: factory.address });
+    }
+
+    return buildLogFactory({
+      chainId: chain.id,
+      sourceId: sourceName,
+      ...factory,
+      fromBlock:
+        (await resolveBlockNumber(factory.startBlock, chain)) ?? fromBlock,
+      toBlock: (await resolveBlockNumber(factory.endBlock, chain)) ?? toBlock,
+    });
   };
 
   const finalizedBlocks = await Promise.all(
@@ -436,27 +477,12 @@ export async function buildIndexingFunctions({
       typeof resolvedAddress === "object" &&
       Array.isArray(resolvedAddress) === false
     ) {
-      const factoryAddress = resolvedAddress as Factory;
-      if (factoryAddress.address !== undefined) {
-        validateAddresses({
-          sourceName: source.name,
-          addresses: factoryAddress.address,
-        });
-      }
-      const factoryFromBlock =
-        (await resolveBlockNumber(factoryAddress.startBlock, chain)) ??
-        fromBlock;
-
-      const factoryToBlock =
-        (await resolveBlockNumber(factoryAddress.endBlock, chain)) ?? toBlock;
-
-      // Note that this can throw.
-      const logFactory = buildLogFactory({
-        chainId: chain.id,
-        sourceId: source.name,
-        ...factoryAddress,
-        fromBlock: factoryFromBlock,
-        toBlock: factoryToBlock,
+      const logFactory = await buildFactory({
+        sourceName: source.name,
+        factory: resolvedAddress as FactoryConfig,
+        chain,
+        fromBlock,
+        toBlock,
       });
 
       perChainContracts.get(chain.id)![source.name] = {
@@ -533,32 +559,42 @@ export async function buildIndexingFunctions({
         );
         const args = { ...(filter.args as Record<string, unknown>) };
 
-        for (const [name, value] of Object.entries(args)) {
-          if (isFactoryConfig(value) === false) continue;
+        const factoryArgs = Object.entries(args).filter(
+          (entry): entry is [string, FactoryConfig] =>
+            isFactoryConfig(entry[1]),
+        );
+        if (factoryArgs.length > 1) {
+          throw new Error(
+            `Validation failed: Invalid filter for contract '${source.name}'. Event '${filter.event}' has more than one factory argument.`,
+          );
+        }
 
+        for (const [name, value] of factoryArgs) {
           const index = indexedInputs.findIndex((input) => input.name === name);
           if (index === -1) {
             throw new Error(
               `Validation failed: Invalid filter for contract '${source.name}'. Factory argument '${name}' is not an indexed parameter of event '${filter.event}'.`,
             );
           }
+          if (isTopicValueType(indexedInputs[index]!.type) === false) {
+            throw new Error(
+              `Validation failed: Invalid filter for contract '${source.name}'. Factory argument '${name}' of event '${filter.event}' has type '${indexedInputs[index]!.type}'; a factory argument must be a 32-byte value type such as 'bytes32' or 'uint256'. Use a factory 'address' for contract addresses.`,
+            );
+          }
           if (childTopics.has(toEventSelector(abiEvent))) {
             throw new Error(
-              `Validation failed: Invalid filter for contract '${source.name}'. Event '${filter.event}' has more than one factory argument.`,
+              `Validation failed: Invalid filter for contract '${source.name}'. Event '${filter.event}' has a factory argument in more than one filter.`,
             );
           }
 
           childTopics.set(toEventSelector(abiEvent), {
             index: (index + 1) as 1 | 2 | 3,
-            factory: buildLogFactory({
-              chainId: chain.id,
-              sourceId: source.name,
-              ...value,
-              fromBlock:
-                (await resolveBlockNumber(value.startBlock, chain)) ??
-                fromBlock,
-              toBlock:
-                (await resolveBlockNumber(value.endBlock, chain)) ?? toBlock,
+            factory: await buildFactory({
+              sourceName: source.name,
+              factory: value,
+              chain,
+              fromBlock,
+              toBlock,
             }),
           });
           args[name] = undefined;
@@ -787,26 +823,12 @@ export async function buildIndexingFunctions({
       typeof resolvedAddress === "object" &&
       !Array.isArray(resolvedAddress)
     ) {
-      if (resolvedAddress.address !== undefined) {
-        validateAddresses({
-          sourceName: source.name,
-          addresses: resolvedAddress.address,
-        });
-      }
-      const factoryFromBlock =
-        (await resolveBlockNumber(resolvedAddress.startBlock, chain)) ??
-        fromBlock;
-
-      const factoryToBlock =
-        (await resolveBlockNumber(resolvedAddress.endBlock, chain)) ?? toBlock;
-
-      // Note that this can throw.
-      const logFactory = buildLogFactory({
-        chainId: chain.id,
-        sourceId: source.name,
-        ...resolvedAddress,
-        fromBlock: factoryFromBlock,
-        toBlock: factoryToBlock,
+      const logFactory = await buildFactory({
+        sourceName: source.name,
+        factory: resolvedAddress,
+        chain,
+        fromBlock,
+        toBlock,
       });
 
       address = logFactory;

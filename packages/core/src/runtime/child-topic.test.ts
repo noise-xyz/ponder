@@ -13,7 +13,7 @@ import {
   isLogFilterChildMatched,
   mergeLogFiltersToRequests,
 } from "./filter.js";
-import { encodeFragment, getFragments } from "./fragments.js";
+import { decodeFragment, encodeFragment, getFragments } from "./fragments.js";
 
 const parent = "0x0000000000000000000000000000000000000001" as Address;
 const target = "0x0000000000000000000000000000000000000002" as Address;
@@ -177,7 +177,7 @@ test("getFactoryChildren() reads each launch's transaction and receipt", async (
   const launch = logOf({});
   const foreign = logOf({ topics: [createSelector, pad("0x04")] });
 
-  const children = await getFactoryChildren({
+  const childOf = await getFactoryChildren({
     factory: factoryFor(child as unknown as LogFactory["child"]),
     logs: [launch, foreign],
     rpc,
@@ -189,7 +189,8 @@ test("getFactoryChildren() reads each launch's transaction and receipt", async (
     ],
   });
 
-  expect([...children]).toStrictEqual([[launch, poolA]]);
+  expect(childOf(launch)).toBe(poolA);
+  expect(childOf(foreign)).toBeUndefined();
   expect(requests).toStrictEqual(["eth_getTransactionReceipt"]);
 });
 
@@ -230,14 +231,60 @@ test("getFactoryChildren() reads a receipt once for factories that share it", as
   expect(rpc.request).toHaveBeenCalledTimes(1);
 });
 
-test("getFactoryChildren() is empty for a factory without a child function", async () => {
-  const factory = { ...factoryFor(), child: undefined };
+test("getFactoryChildren() decodes the child of a factory without a child function from the log", async () => {
+  const factory: LogFactory = {
+    ...factoryFor(),
+    child: undefined,
+    childAddressLocation: "topic1",
+  };
   const rpc = { request: vi.fn() } as unknown as Rpc;
 
-  await expect(
-    getFactoryChildren({ factory, logs: [logOf({})], rpc }),
-  ).resolves.toStrictEqual(new Map());
+  const childOf = await getFactoryChildren({
+    factory,
+    logs: [logOf({})],
+    rpc,
+  });
+
+  expect(childOf(logOf({}))).toBe("0x0000000000000000000000000000000000000003");
   expect(rpc.request).not.toHaveBeenCalled();
+});
+
+test("getFactoryChildren() names the factory and log when a child function throws", async () => {
+  const transaction = {
+    hash: pad("0x11"),
+    from: parent,
+    to: target,
+    input: "0x",
+  };
+  const rpc = {
+    request: vi.fn(async () => ({
+      blockHash: pad("0x10"),
+      blockNumber: numberToHex(10),
+      transactionHash: pad("0x11"),
+      transactionIndex: "0x0",
+      from: parent,
+      status: "0x1",
+      logs: [],
+    })),
+  } as unknown as Rpc;
+
+  await expect(
+    getFactoryChildren({
+      factory: factoryFor(() => {
+        throw new Error("bad launch");
+      }),
+      logs: [logOf({})],
+      rpc,
+      blocks: [
+        {
+          hash: pad("0x10"),
+          transactions: [transaction],
+        } as unknown as SyncBlock,
+      ],
+    }),
+  ).rejects.toThrow(
+    `Factory 'child' function of 'Pools' (child:pools.v1) failed for log ${pad("0x11")}:0: bad launch`,
+  );
 });
 
 test("getFragments() keys a child topic by its factory, so other coverage cannot satisfy it", () => {
@@ -250,7 +297,8 @@ test("getFragments() keys a child topic by its factory, so other coverage cannot
   const [{ fragment, adjacentIds }] = fragments as [(typeof fragments)[number]];
   const id = encodeFragment(fragment);
 
-  expect(id).toContain(`_child:pools.v1_`);
+  expect(id).toContain(`|child:pools.v1|`);
+  expect(decodeFragment(id)).toStrictEqual(fragment);
   expect(id).toContain(`${createSelector}:${usdc}:null:null`);
   expect(adjacentIds).toContain(id);
   expect(

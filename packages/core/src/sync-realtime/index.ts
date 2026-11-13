@@ -43,7 +43,6 @@ import {
 import type { Rpc } from "@/rpc/index.js";
 import { getFactoryChildren } from "@/runtime/factory-child.js";
 import {
-  getChildAddress,
   getFilterFactories,
   isAddressFactory,
   isAddressMatched,
@@ -67,9 +66,9 @@ import { createLock } from "@/utils/mutex.js";
 import { range } from "@/utils/range.js";
 import { startClock } from "@/utils/timer.js";
 import {
+  createLogFilterChildBloom,
   getFactoryBloom,
   getLogFilterBloom,
-  isAnyChildInBloom,
   isFactoryInBloom,
   isFilterInBloom,
   isInBloom,
@@ -192,41 +191,7 @@ export const createRealtimeSync = (
 
   const logFilterBlooms = logFilters.map(getLogFilterBloom);
   const factoryBlooms = factories.map(getFactoryBloom);
-  const factoryBloomsById = new Map(
-    factories.map((factory, i) => [factory.id, factoryBlooms[i]!]),
-  );
-
-  /**
-   * Return true if a log of `factory`'s children can be in `bloom`: a known child
-   * is in it, or the factory can announce a new child in the same block.
-   */
-  const isFactoryChildInBloom = (
-    factory: Factory,
-    bloom: Uint8Array,
-    blockNumber: number,
-  ) => {
-    const factoryBloom = factoryBloomsById.get(factory.id);
-
-    return (
-      (factoryBloom !== undefined &&
-        isFactoryInBloom({ bloom, factory: factoryBloom })) ||
-      isAnyChildInBloom({
-        bloom,
-        children: childAddresses.get(factory.id) ?? new Map(),
-        blockNumber,
-      })
-    );
-  };
-
-  const isLogFilterChildInBloom = (
-    filter: LogFilter,
-    bloom: Uint8Array,
-    blockNumber: number,
-  ) =>
-    (isAddressFactory(filter.address) === false ||
-      isFactoryChildInBloom(filter.address, bloom, blockNumber)) &&
-    (filter.childTopic === undefined ||
-      isFactoryChildInBloom(filter.childTopic.factory, bloom, blockNumber));
+  const isLogFilterChildInBloom = createLogFilterChildBloom(factories);
 
   const getLatestUnfinalizedBlock = () => {
     if (unfinalizedBlocks.length === 0) {
@@ -268,6 +233,10 @@ export const createRealtimeSync = (
     const isAsyncExecution = isAsyncExecutionChain(args.chain.id);
     const blockNumber = hexToNumber(maybeBlockHeader.number);
     const bloom = hexToBytes(maybeBlockHeader.logsBloom);
+    // Note: Missing blocks are fetched before their parents are reconciled, so
+    // `childAddresses` can lack a child born in an earlier fetched block.
+    const areChildrenKnown =
+      maybeBlockHeader.parentHash === getLatestUnfinalizedBlock().hash;
 
     const logsRequestFilter = mergeLogFiltersToBlockRequest({
       logFilters: logFilters.filter(
@@ -276,7 +245,12 @@ export const createRealtimeSync = (
           (isAsyncExecution ||
             maybeBlockHeader.logsBloom === zeroLogsBloom ||
             (isFilterInBloom({ bloom, filter: logFilterBlooms[i]! }) &&
-              isLogFilterChildInBloom(logFilter, bloom, blockNumber))),
+              isLogFilterChildInBloom({
+                filter: logFilter,
+                bloom,
+                blockNumber,
+                childAddresses: areChildrenKnown ? childAddresses : undefined,
+              }))),
       ),
       factories: factories.filter(
         (factory, i) =>
@@ -418,7 +392,7 @@ export const createRealtimeSync = (
     const receipts = new Map<Hash, Promise<SyncTransactionReceipt>>();
 
     for (const factory of factories) {
-      const children = await getFactoryChildren({
+      const childOf = await getFactoryChildren({
         factory,
         logs,
         rpc: args.rpc,
@@ -432,10 +406,7 @@ export const createRealtimeSync = (
           factoryLogs.add(log);
           let address: Address;
           try {
-            const child =
-              factory.child === undefined
-                ? getChildAddress({ log, factory })
-                : children.get(log);
+            const child = childOf(log);
             if (child === undefined) continue;
             address = child;
             childAddressDecodeSuccessCount++;

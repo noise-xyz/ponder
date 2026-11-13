@@ -1,4 +1,5 @@
-import type { Address, Hash } from "viem";
+import { type Address, type Hash, type Hex, hexToNumber } from "viem";
+import { NonRetryableUserError } from "@/internal/errors.js";
 import type {
   Factory,
   SyncBlock,
@@ -12,12 +13,13 @@ import {
 } from "@/rpc/actions.js";
 import type { Rpc } from "@/rpc/index.js";
 import { toLowerCase } from "@/utils/lowercase.js";
-import { isLogFactoryMatched } from "./filter.js";
+import { getChildAddress, isLogFactoryMatched } from "./filter.js";
 
 /**
- * Returns the child that each of `logs` announces for a factory with a `child`
- * function, keyed by log, or `undefined` for a log that announces none. Logs
- * that `factory` does not match are skipped. Empty for any other factory.
+ * Returns a function that gives the child a factory log announces, or
+ * `undefined` if it announces none. For a factory with a `child` function, the
+ * children of `logs` are resolved up front; otherwise the child is decoded from
+ * the log, which throws if the log does not hold one.
  *
  * @dev Reads each matched log's transaction and receipt. `blocks` supplies
  * transactions the caller already has; any other block is fetched once. Pass the
@@ -37,9 +39,9 @@ export const getFactoryChildren = async ({
   blocks?: SyncBlock[];
   receipts?: Map<Hash, Promise<SyncTransactionReceipt>>;
   context?: Parameters<Rpc["request"]>[1];
-}): Promise<Map<SyncLog, Address | undefined>> => {
+}): Promise<(log: SyncLog) => Address | undefined> => {
   const child = factory.child;
-  if (child === undefined) return new Map();
+  if (child === undefined) return (log) => getChildAddress({ log, factory });
 
   const matchedLogs = logs.filter((log) =>
     isLogFactoryMatched({ factory, log }),
@@ -79,10 +81,20 @@ export const getFactoryChildren = async ({
         );
       }
 
-      const value = child({ log, transaction, receipt });
+      let value: Hex | undefined;
+      try {
+        value = child({ log, transaction, receipt });
+      } catch (error) {
+        throw new NonRetryableUserError(
+          `Factory 'child' function of '${factory.sourceId}' (${factory.childAddressLocation}) failed for log ${log.transactionHash}:${hexToNumber(log.logIndex)}: ${(error as Error).message}`,
+        );
+      }
       return value === undefined ? undefined : (toLowerCase(value) as Address);
     }),
   );
 
-  return new Map(matchedLogs.map((log, i) => [log, children[i]]));
+  const childrenByLog = new Map(
+    matchedLogs.map((log, i) => [log, children[i]]),
+  );
+  return (log) => childrenByLog.get(log);
 };
