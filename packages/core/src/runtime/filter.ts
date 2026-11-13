@@ -355,11 +355,6 @@ export const getChildAddress = ({
   log: SyncLog;
   factory: Factory;
 }): Address => {
-  if (factory.childAddressLocation.startsWith("child:")) {
-    throw new Error(
-      `Factory '${factory.sourceId}' has a 'child' function; its children are not in the log.`,
-    );
-  }
   if (factory.childAddressLocation.startsWith("offset")) {
     const childAddressOffset = Number(
       factory.childAddressLocation.substring(6),

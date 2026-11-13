@@ -13,7 +13,7 @@ import {
   isLogFilterChildMatched,
   mergeLogFiltersToRequests,
 } from "./filter.js";
-import { decodeFragment, encodeFragment, getFragments } from "./fragments.js";
+import { encodeFragment, getFragments } from "./fragments.js";
 
 const parent = "0x0000000000000000000000000000000000000001" as Address;
 const target = "0x0000000000000000000000000000000000000002" as Address;
@@ -194,43 +194,6 @@ test("getFactoryChildren() reads each launch's transaction and receipt", async (
   expect(requests).toStrictEqual(["eth_getTransactionReceipt"]);
 });
 
-test("getFactoryChildren() reads a receipt once for factories that share it", async () => {
-  const transaction = {
-    hash: pad("0x11"),
-    from: parent,
-    to: target,
-    input: "0x",
-  };
-  const receipt = {
-    blockHash: pad("0x10"),
-    blockNumber: numberToHex(10),
-    transactionHash: pad("0x11"),
-    transactionIndex: "0x0",
-    from: parent,
-    status: "0x1",
-    logs: [],
-  };
-  const rpc = {
-    request: vi.fn(async () => receipt),
-  } as unknown as Rpc;
-  const blocks = [
-    { hash: pad("0x10"), transactions: [transaction] } as unknown as SyncBlock,
-  ];
-  const receipts = new Map();
-
-  for (const id of ["pools", "tokens"]) {
-    await getFactoryChildren({
-      factory: { ...factoryFor(), id },
-      logs: [logOf({})],
-      rpc,
-      blocks,
-      receipts,
-    });
-  }
-
-  expect(rpc.request).toHaveBeenCalledTimes(1);
-});
-
 test("getFactoryChildren() decodes the child of a factory without a child function from the log", async () => {
   const factory: LogFactory = {
     ...factoryFor(),
@@ -297,8 +260,7 @@ test("getFragments() keys a child topic by its factory, so other coverage cannot
   const [{ fragment, adjacentIds }] = fragments as [(typeof fragments)[number]];
   const id = encodeFragment(fragment);
 
-  expect(id).toContain(`|child:pools.v1|`);
-  expect(decodeFragment(id)).toStrictEqual(fragment);
+  expect(id).toContain(`_child:pools.v1_`);
   expect(id).toContain(`${createSelector}:${usdc}:null:null`);
   expect(adjacentIds).toContain(id);
   expect(

@@ -71,14 +71,10 @@ const toFragmentFactory = (factory: Factory, address: Address | null) =>
 const staticTopic = (topic: FragmentTopic): Hex | null =>
   typeof topic === "string" ? topic : null;
 
-/**
- * Encode a log fragment topic. A child topic's factory is joined with "|", so
- * that the fragment id keeps one "_"-separated field per topic.
- */
 const fragmentTopicToId = (topic: FragmentTopic): string =>
   topic === null || typeof topic === "string"
     ? `${topic}`
-    : fragmentAddressToId(topic)!.replaceAll("_", "|");
+    : `${fragmentAddressToId(topic)}`;
 
 type FragmentReturnType = {
   fragment: Fragment;
@@ -430,10 +426,9 @@ export const encodeFragment = (fragment: Fragment): FragmentId => {
 export const decodeFragment = (fragmentId: FragmentId): Fragment => {
   const [type, chainId] = fragmentId.split("_");
 
-  const decodeFragmentAddress = (
-    offset: number,
-    fragmentAddressId = fragmentId.split("_").slice(offset),
-  ): FragmentAddress => {
+  const decodeFragmentAddress = (offset: number): FragmentAddress => {
+    const fragmentAddressId = fragmentId.split("_").slice(offset);
+
     // Note: A factory without an address starts with "null", so it must be
     // detected before the null address.
     if (
@@ -463,13 +458,6 @@ export const decodeFragment = (fragmentId: FragmentId): Fragment => {
 
     return fragmentAddressId[0] as Address;
   };
-
-  const decodeFragmentTopic = (topicId: string): FragmentTopic =>
-    topicId === "null"
-      ? null
-      : topicId.includes("|")
-        ? (decodeFragmentAddress(0, topicId.split("|")) as FragmentFactory)
-        : (topicId as Hex);
 
   switch (type! as Fragment["type"]) {
     case "block": {
@@ -563,9 +551,9 @@ export const decodeFragment = (fragmentId: FragmentId): Fragment => {
           chainId: Number(chainId),
           address: fragmentAddress,
           topic0: topic0 as Hex,
-          topic1: decodeFragmentTopic(topic1!),
-          topic2: decodeFragmentTopic(topic2!),
-          topic3: decodeFragmentTopic(topic3!),
+          topic1: topic1! === "null" ? null : (topic1 as Hex),
+          topic2: topic2! === "null" ? null : (topic2 as Hex),
+          topic3: topic3! === "null" ? null : (topic3 as Hex),
           includeTransactionReceipts: includeTxr === "1",
         };
       }
@@ -578,9 +566,9 @@ export const decodeFragment = (fragmentId: FragmentId): Fragment => {
         chainId: Number(chainId),
         address: fragmentAddress,
         topic0: topic0 as Hex,
-        topic1: decodeFragmentTopic(topic1!),
-        topic2: decodeFragmentTopic(topic2!),
-        topic3: decodeFragmentTopic(topic3!),
+        topic1: topic1! === "null" ? null : (topic1 as Hex),
+        topic2: topic2! === "null" ? null : (topic2 as Hex),
+        topic3: topic3! === "null" ? null : (topic3 as Hex),
         includeTransactionReceipts: includeTxr === "1",
       };
     }

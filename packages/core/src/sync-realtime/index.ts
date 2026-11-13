@@ -261,30 +261,24 @@ export const createRealtimeSync = (
       ),
     });
     const shouldRequestLogs = logsRequestFilter !== undefined;
-    const logsRequestParams =
-      logsRequestFilter === undefined
-        ? undefined
-        : {
-            blockHash: maybeBlockHeader.hash,
-            address: logsRequestFilter.address,
-            topics: logsRequestFilter.topics,
-          };
 
     let logs: SyncLog[] = [];
-    if (logsRequestParams !== undefined) {
-      // The full block is fetched only when the block has logs, so a block whose
-      // bloom is a false positive costs one request.
-      logs = await eth_getLogs(args.rpc, [logsRequestParams], context);
-      if (block === undefined && logs.length > 0) {
-        block = await eth_getBlockByHash(
-          args.rpc,
-          [maybeBlockHeader.hash, true],
-          context,
-        );
-      }
-    }
+    if (shouldRequestLogs) {
+      const logsRequestParams = {
+        blockHash: maybeBlockHeader.hash,
+        address: logsRequestFilter.address,
+        topics: logsRequestFilter.topics,
+      };
 
-    if (logsRequestParams !== undefined && block !== undefined) {
+      if (block === undefined) {
+        [block, logs] = await Promise.all([
+          eth_getBlockByHash(args.rpc, [maybeBlockHeader.hash, true], context),
+          eth_getLogs(args.rpc, [logsRequestParams], context),
+        ]);
+      } else {
+        logs = await eth_getLogs(args.rpc, [logsRequestParams], context);
+      }
+
       validateLogsAndBlock(
         logs,
         block,
@@ -389,15 +383,12 @@ export const createRealtimeSync = (
     let childAddressDecodeFailureCount = 0;
     let childAddressDecodeSuccessCount = 0;
 
-    const receipts = new Map<Hash, Promise<SyncTransactionReceipt>>();
-
     for (const factory of factories) {
       const childOf = await getFactoryChildren({
         factory,
         logs,
         rpc: args.rpc,
         blocks: block === undefined ? [] : [block],
-        receipts,
         context,
       });
 
