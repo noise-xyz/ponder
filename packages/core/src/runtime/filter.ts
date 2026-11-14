@@ -290,6 +290,42 @@ const fromLogFilterValues = (values: Hex[] | undefined): Hex[] | null => {
  *
  * @dev A dimension with more than `ADDRESS_CHUNK_SIZE` values matches all values.
  */
+/**
+ * Returns `filter` with its factory address replaced by the factory's children
+ * born by `blockNumber`, so a block request asks only for their logs. Pass
+ * `childAddresses` only when it holds every child that can log in the block;
+ * otherwise, or at `factoryAddressCountThreshold` children, `filter` is
+ * returned unchanged.
+ */
+export const toKnownChildrenLogFilter = ({
+  filter,
+  childAddresses,
+  blockNumber,
+  factoryAddressCountThreshold,
+}: {
+  filter: LogFilter;
+  childAddresses: ChildAddresses | undefined;
+  blockNumber: number;
+  factoryAddressCountThreshold: number;
+}): LogFilter => {
+  if (
+    childAddresses === undefined ||
+    isAddressFactory(filter.address) === false
+  ) {
+    return filter;
+  }
+
+  const children = childAddresses.get(filter.address.id)!;
+  if (children.size >= factoryAddressCountThreshold) return filter;
+
+  return {
+    ...filter,
+    address: Array.from(children)
+      .filter(([, childBlockNumber]) => childBlockNumber <= blockNumber)
+      .map(([address]) => address),
+  };
+};
+
 export const mergeLogFiltersToBlockRequest = ({
   logFilters,
   factories,

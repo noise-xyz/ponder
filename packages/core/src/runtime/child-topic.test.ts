@@ -12,6 +12,7 @@ import {
   isLogFactoryMatched,
   isLogFilterChildMatched,
   mergeLogFiltersToRequests,
+  toKnownChildrenLogFilter,
 } from "./filter.js";
 import { encodeFragment, getFragments } from "./fragments.js";
 
@@ -271,4 +272,37 @@ test("getFragments() keys a child topic by its factory, so other coverage cannot
       otherPolicy[0]!.adjacentIds.includes(adjacent),
     ),
   ).toBe(false);
+});
+
+test("toKnownChildrenLogFilter() narrows a factory address to children born by the block", () => {
+  const filter: LogFilter = {
+    ...filterFor(factoryFor()),
+    address: factoryFor(),
+    childTopic: undefined,
+  };
+  const tokenA: Address = "0x00000000000000000000000000000000000000aa";
+  const tokenB: Address = "0x00000000000000000000000000000000000000bb";
+  const childAddresses = new Map([
+    [
+      "factory",
+      new Map([
+        [tokenA, 10],
+        [tokenB, 12],
+      ]),
+    ],
+  ]);
+  const narrow = (
+    known: typeof childAddresses | undefined,
+    threshold = 1_000,
+  ) =>
+    toKnownChildrenLogFilter({
+      filter,
+      childAddresses: known,
+      blockNumber: 11,
+      factoryAddressCountThreshold: threshold,
+    }).address;
+
+  expect(narrow(childAddresses)).toStrictEqual([tokenA]);
+  expect(narrow(undefined)).toBe(filter.address);
+  expect(narrow(childAddresses, 2)).toBe(filter.address);
 });

@@ -55,6 +55,7 @@ import {
   isTransactionFilterMatched,
   isTransferFilterMatched,
   mergeLogFiltersToBlockRequest,
+  toKnownChildrenLogFilter,
 } from "@/runtime/filter.js";
 import {
   getFactoryFragmentId,
@@ -191,6 +192,9 @@ export const createRealtimeSync = (
 
   const logFilterBlooms = logFilters.map(getLogFilterBloom);
   const factoryBlooms = factories.map(getFactoryBloom);
+  const factoryBloomsById = new Map(
+    factories.map((factory, i) => [factory.id, factoryBlooms[i]!]),
+  );
   const isLogFilterChildInBloom = createLogFilterChildBloom(factories);
 
   const getLatestUnfinalizedBlock = () => {
@@ -238,20 +242,47 @@ export const createRealtimeSync = (
     const areChildrenKnown =
       maybeBlockHeader.parentHash === getLatestUnfinalizedBlock().hash;
 
+    const isBloomUsable =
+      isAsyncExecution === false &&
+      maybeBlockHeader.logsBloom !== zeroLogsBloom;
+
+    // A factory address asks only for known children's logs when no earlier
+    // child can be missing and the factory cannot announce a new one here.
+    const isFactoryQuiet = (filter: LogFilter) => {
+      if (isAddressFactory(filter.address) === false) return false;
+      const factoryBloom = factoryBloomsById.get(filter.address.id);
+      return (
+        factoryBloom === undefined ||
+        isFactoryInBloom({ bloom, factory: factoryBloom }) === false
+      );
+    };
+
     const logsRequestFilter = mergeLogFiltersToBlockRequest({
-      logFilters: logFilters.filter(
-        (logFilter, i) =>
-          isBlockInFilter(logFilter, blockNumber) &&
-          (isAsyncExecution ||
-            maybeBlockHeader.logsBloom === zeroLogsBloom ||
-            (isFilterInBloom({ bloom, filter: logFilterBlooms[i]! }) &&
-              isLogFilterChildInBloom({
-                filter: logFilter,
-                bloom,
-                blockNumber,
-                childAddresses: areChildrenKnown ? childAddresses : undefined,
-              }))),
-      ),
+      logFilters: logFilters
+        .filter(
+          (logFilter, i) =>
+            isBlockInFilter(logFilter, blockNumber) &&
+            (isBloomUsable === false ||
+              (isFilterInBloom({ bloom, filter: logFilterBlooms[i]! }) &&
+                isLogFilterChildInBloom({
+                  filter: logFilter,
+                  bloom,
+                  blockNumber,
+                  childAddresses: areChildrenKnown ? childAddresses : undefined,
+                }))),
+        )
+        .map((logFilter) =>
+          toKnownChildrenLogFilter({
+            filter: logFilter,
+            childAddresses:
+              isBloomUsable && areChildrenKnown && isFactoryQuiet(logFilter)
+                ? childAddresses
+                : undefined,
+            blockNumber,
+            factoryAddressCountThreshold:
+              args.common.options.factoryAddressCountThreshold,
+          }),
+        ),
       factories: factories.filter(
         (factory, i) =>
           isBlockInFilter(factory, blockNumber) &&
