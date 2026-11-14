@@ -124,3 +124,77 @@ test("buildLogFactory handles location", () => {
     childAddressLocation: "offset10",
   });
 });
+
+test("buildLogFactory encodes the filter option as factory event topics", () => {
+  const factory = buildLogFactory({
+    address: "0xa",
+    event: llamaFactoryEventAbiItem,
+    parameter: "llamaCore",
+    filter: { deployer: "0x00000000000000000000000000000000000000bb" },
+    chainId: 1,
+    sourceId: "Llama",
+    fromBlock: undefined,
+    toBlock: undefined,
+  });
+
+  expect(factory.topics).toStrictEqual([
+    "0x00000000000000000000000000000000000000000000000000000000000000bb",
+    null,
+    null,
+  ]);
+  expect(factory.id).toContain(
+    "_0x00000000000000000000000000000000000000000000000000000000000000bb_null_null",
+  );
+});
+
+test("buildLogFactory rejects a filter key that is not an indexed parameter", () => {
+  expect(() =>
+    buildLogFactory({
+      address: "0xa",
+      event: llamaFactoryEventAbiItem,
+      parameter: "llamaCore",
+      filter: { llamaCore: "0x00000000000000000000000000000000000000bb" },
+      chainId: 1,
+      sourceId: "Llama",
+      fromBlock: undefined,
+      toBlock: undefined,
+    }),
+  ).toThrowError(
+    "Factory filter key is not an indexed factory event parameter. Got 'llamaCore', expected one of ['deployer', 'name'].",
+  );
+});
+
+test("buildLogFactory keeps a child function under its childId", () => {
+  const child = () => undefined;
+  const factory = buildLogFactory({
+    address: "0xa",
+    event: llamaFactoryEventAbiItem,
+    child,
+    childId: "llama.v2",
+    chainId: 1,
+    sourceId: "Llama",
+    fromBlock: undefined,
+    toBlock: undefined,
+  });
+
+  expect(factory.childAddressLocation).toBe("child:llama.v2");
+  expect(factory.child).toBe(child);
+  expect(factory.id).toContain("_child:llama.v2_");
+});
+
+test("buildLogFactory rejects a childId that fragment IDs cannot hold", () => {
+  expect(() =>
+    buildLogFactory({
+      address: "0xa",
+      event: llamaFactoryEventAbiItem,
+      child: () => undefined,
+      childId: "llama_v2",
+      chainId: 1,
+      sourceId: "Llama",
+      fromBlock: undefined,
+      toBlock: undefined,
+    }),
+  ).toThrowError(
+    "Factory childId is invalid. Got 'llama_v2', expected letters, digits, '.', '-' or ':'.",
+  );
+});

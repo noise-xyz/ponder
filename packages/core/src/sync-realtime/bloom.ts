@@ -1,5 +1,5 @@
 import { type Hex, keccak256 } from "viem";
-import type { Factory, LogFilter } from "@/internal/types.js";
+import type { Factory, FactoryId, LogFilter } from "@/internal/types.js";
 import { isAddressFactory } from "@/runtime/filter.js";
 
 export const zeroLogsBloom =
@@ -122,6 +122,8 @@ export function isFilterInBloom({
 export type FactoryBloom = {
   address: BloomBits[] | undefined;
   eventSelector: BloomBits;
+  /** The factory's `filter` topics. */
+  topics: (BloomBits | undefined)[];
 };
 
 /**
@@ -131,6 +133,9 @@ export type FactoryBloom = {
 export const getFactoryBloom = (factory: Factory): FactoryBloom => ({
   address: toBloomBits(factory.address),
   eventSelector: getBloomBits(factory.eventSelector),
+  topics: (factory.topics ?? []).map((topic) =>
+    topic === null ? undefined : getBloomBits(topic),
+  ),
 });
 
 /**
@@ -147,6 +152,103 @@ export function isFactoryInBloom({
 }): boolean {
   return (
     isAnyInBloom(bloom, factory.address) &&
-    isBloomBitsInBloom(bloom, factory.eventSelector)
+    isBloomBitsInBloom(bloom, factory.eventSelector) &&
+    factory.topics.every(
+      (topic) => topic === undefined || isBloomBitsInBloom(bloom, topic),
+    )
   );
 }
+
+/**
+ * Return true if a child in `children` born at or before `blockNumber` can be
+ * in `bloom`. A child is an address or a topic value; `cache` holds the bloom
+ * bits of each child hashed so far.
+ *
+ * Note: False positives are possible.
+ */
+export function isAnyChildInBloom({
+  bloom,
+  children,
+  blockNumber,
+  cache,
+}: {
+  bloom: Uint8Array;
+  children: Map<Hex, number>;
+  blockNumber: number;
+  cache: Map<Hex, BloomBits>;
+}): boolean {
+  for (const [child, childBlockNumber] of children) {
+    if (childBlockNumber > blockNumber) continue;
+
+    let bits = cache.get(child);
+    if (bits === undefined) {
+      bits = getBloomBits(child);
+      cache.set(child, bits);
+    }
+    if (isBloomBitsInBloom(bloom, bits)) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Create a check that returns true if a log of `filter`'s factory children can
+ * be in `bloom`: a known child is in it, or the factory can announce a new
+ * child there. Pass `childAddresses` only when it holds every child born before
+ * the block; without it, the check cannot rule a block out.
+ *
+ * Note: False positives are possible.
+ */
+export const createLogFilterChildBloom = (factories: Factory[]) => {
+  const factoryBlooms = new Map(
+    factories.map((factory) => [factory.id, getFactoryBloom(factory)]),
+  );
+  const cache = new Map<Hex, BloomBits>();
+
+  const isFactoryChildInBloom = (
+    factory: Factory,
+    bloom: Uint8Array,
+    blockNumber: number,
+    childAddresses: Map<FactoryId, Map<Hex, number>>,
+  ) => {
+    const factoryBloom = factoryBlooms.get(factory.id);
+
+    return (
+      (factoryBloom !== undefined &&
+        isFactoryInBloom({ bloom, factory: factoryBloom })) ||
+      isAnyChildInBloom({
+        bloom,
+        children: childAddresses.get(factory.id) ?? new Map(),
+        blockNumber,
+        cache,
+      })
+    );
+  };
+
+  return ({
+    filter,
+    bloom,
+    blockNumber,
+    childAddresses,
+  }: {
+    filter: LogFilter;
+    bloom: Uint8Array;
+    blockNumber: number;
+    childAddresses: Map<FactoryId, Map<Hex, number>> | undefined;
+  }): boolean =>
+    childAddresses === undefined ||
+    ((isAddressFactory(filter.address) === false ||
+      isFactoryChildInBloom(
+        filter.address,
+        bloom,
+        blockNumber,
+        childAddresses,
+      )) &&
+      (filter.childTopic === undefined ||
+        isFactoryChildInBloom(
+          filter.childTopic.factory,
+          bloom,
+          blockNumber,
+          childAddresses,
+        )));
+};

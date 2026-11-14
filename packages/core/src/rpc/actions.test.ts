@@ -10,6 +10,7 @@ import {
   eth_getLogsWithPagination,
   eth_getTransactionReceipts,
   standardizeTransactions,
+  TOPIC_CHUNK_SIZE,
   validateLogsAndBlock,
 } from "./actions.js";
 
@@ -140,6 +141,36 @@ test("eth_getLogs chunks address arrays and merges responses in order", async ()
     [addresses[50]],
   ]);
   expect(params[0].address).toStrictEqual(addresses);
+});
+
+test("eth_getLogs splits topic arrays longer than TOPIC_CHUNK_SIZE", async () => {
+  const topics = Array.from(
+    { length: TOPIC_CHUNK_SIZE + 1 },
+    (_, index) => `0x${index.toString(16).padStart(64, "0")}` as Hex,
+  );
+  const requests: Extract<RequestParameters, { method: "eth_getLogs" }>[] = [];
+  const rpc = {
+    request: vi.fn(
+      async (
+        request: Extract<RequestParameters, { method: "eth_getLogs" }>,
+      ) => {
+        requests.push(request);
+        return [];
+      },
+    ),
+  } as unknown as Rpc;
+
+  await eth_getLogs(rpc, [
+    {
+      address: "0x0000000000000000000000000000000000000001",
+      topics: [topics[0]!, topics],
+    },
+  ]);
+
+  expect(requests.map((request) => request.params[0].topics)).toStrictEqual([
+    [topics[0], topics.slice(0, TOPIC_CHUNK_SIZE)],
+    [topics[0], topics.slice(TOPIC_CHUNK_SIZE)],
+  ]);
 });
 
 test("eth_getLogs sorts logs by block number and log index", async () => {
