@@ -130,6 +130,8 @@ export type LogFilter<
   topic1: LogTopic;
   topic2: LogTopic;
   topic3: LogTopic;
+  /** A topic whose value must be a child of `factory`. The static topic at `index` is `null`. */
+  childTopic?: { index: 1 | 2 | 3; factory: LogFactory };
   fromBlock: number | undefined;
   toBlock: number | undefined;
   hasTransactionReceipt: boolean;
@@ -163,6 +165,16 @@ export type TransferFilter<
 
 export type FactoryId = string;
 
+/**
+ * Picks the child that a factory event announces from the event's whole
+ * transaction. Returns `undefined` when the event announces no child.
+ */
+export type FactoryChild = (args: {
+  log: SyncLog;
+  transaction: SyncTransaction;
+  receipt: SyncTransactionReceipt;
+}) => Hex | undefined;
+
 export type LogFactory = {
   id: FactoryId;
   type: "log";
@@ -170,29 +182,38 @@ export type LogFactory = {
   sourceId: string;
   address: Address | Address[] | undefined;
   eventSelector: Hex;
-  childAddressLocation: "topic1" | "topic2" | "topic3" | `offset${number}`;
+  /** topic1 to topic3 of the factory event, from the `filter` option. */
+  topics?: [Hex | null, Hex | null, Hex | null];
+  childAddressLocation:
+    | "topic1"
+    | "topic2"
+    | "topic3"
+    | `offset${number}`
+    | `child:${string}`;
+  /** Set when `childAddressLocation` is `child:{childId}`. */
+  child?: FactoryChild;
   fromBlock: number | undefined;
   toBlock: number | undefined;
 };
 
 // Fragments
 
-export type FragmentAddress =
-  | Address
-  | {
-      address: Address | null;
-      eventSelector: Factory["eventSelector"];
-      childAddressLocation: Factory["childAddressLocation"];
-      fromBlock: number | null;
-      toBlock: number | null;
-    }
-  | null;
+export type FragmentFactory = {
+  address: Address | null;
+  eventSelector: Factory["eventSelector"];
+  topics?: Factory["topics"];
+  childAddressLocation: Factory["childAddressLocation"];
+  fromBlock: number | null;
+  toBlock: number | null;
+};
+
+export type FragmentAddress = Address | FragmentFactory | null;
 
 export type FragmentAddressId =
   | Address
   | `${Address | null}_${Factory["eventSelector"]}_${Factory["childAddressLocation"]}_${number | null}_${number | null}`
   | null;
-export type FragmentTopic = Hex | null;
+export type FragmentTopic = Hex | FragmentFactory | null;
 
 export type Fragment =
   | {
@@ -237,6 +258,7 @@ export type Fragment =
       chainId: number;
       address: Address | null;
       eventSelector: Factory["eventSelector"];
+      topics?: Factory["topics"];
       childAddressLocation: Factory["childAddressLocation"];
       fromBlock: number | null;
       toBlock: number | null;
@@ -251,11 +273,11 @@ export type FragmentId =
   /** trace_{chainId}_{fromAddress}_{toAddress}_{functionSelector}_{includeReceipts} */
   | `trace_${number}_${FragmentAddressId}_${FragmentAddressId}_${Hex | null}_${0 | 1}`
   /** log_{chainId}_{address}_{topic0}_{topic1}_{topic2}_{topic3}_{includeReceipts} */
-  | `log_${number}_${FragmentAddressId}_${FragmentTopic}_${FragmentTopic}_${FragmentTopic}_${FragmentTopic}_${0 | 1}`
+  | `log_${number}_${FragmentAddressId}_${Hex}_${string}_${string}_${string}_${0 | 1}`
   /** transfer_{chainId}_{fromAddress}_{toAddress}_{includeReceipts} */
   | `transfer_${number}_${FragmentAddressId}_${FragmentAddressId}_${0 | 1}`
   /** factory_log_{chainId}_{address}_{eventSelector}_{childAddressLocation}_{fromBlock}_{toBlock} */
-  | `factory_log_${number}_${Address | null}_${Factory["eventSelector"]}_${Factory["childAddressLocation"]}_${number | null}_${number | null}`;
+  | `factory_log_${number}_${Address | null}_${string}_${Factory["childAddressLocation"]}_${number | null}_${number | null}`;
 
 export type FactoryFragmentId = Extract<FragmentId, `factory_${string}`>;
 

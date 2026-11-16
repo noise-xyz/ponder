@@ -1,6 +1,11 @@
-import { type Address, toEventSelector } from "viem";
+import {
+  type Address,
+  encodeEventTopics,
+  type Hex,
+  toEventSelector,
+} from "viem";
 import type { Factory as FactoryConfig } from "@/config/address.js";
-import type { LogFactory } from "@/internal/types.js";
+import type { FactoryChild, LogFactory } from "@/internal/types.js";
 import { dedupe } from "@/utils/dedupe.js";
 import { toLowerCase } from "@/utils/lowercase.js";
 import {
@@ -8,6 +13,10 @@ import {
   getNestedParamOffset,
   type TupleAbiParameter,
 } from "@/utils/offset.js";
+
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
+  ? Omit<T, K>
+  : never;
 
 export function buildLogFactory({
   chainId,
@@ -20,7 +29,7 @@ export function buildLogFactory({
   sourceId: string;
   fromBlock: number | undefined;
   toBlock: number | undefined;
-} & Omit<FactoryConfig, "startBlock" | "endBlock">): LogFactory {
+} & DistributiveOmit<FactoryConfig, "startBlock" | "endBlock">): LogFactory {
   let address: Address | Address[] | undefined;
   if (factoryConfig.address === undefined) {
     // noop
@@ -33,6 +42,11 @@ export function buildLogFactory({
   }
 
   const eventSelector = toEventSelector(factoryConfig.event);
+
+  const { child, childId } = factoryConfig as {
+    child?: FactoryChild;
+    childId?: string;
+  };
 
   let childAddressLocation: LogFactory["childAddressLocation"];
   if ("parameter" in factoryConfig) {
@@ -107,19 +121,72 @@ export function buildLogFactory({
       );
     }
     childAddressLocation = factoryConfig.location!;
+  } else if (child !== undefined) {
+    if (/^[A-Za-z0-9.:-]+$/.test(childId ?? "") === false) {
+      throw new Error(
+        `Factory childId is invalid. Got '${childId}', expected letters, digits, '.', '-' or ':'.`,
+      );
+    }
+    childAddressLocation = `child:${childId}`;
   } else {
-    throw new Error(`Factory must specify "parameter" or "location".`);
+    throw new Error(
+      `Factory must specify "parameter", "location", or "child".`,
+    );
   }
 
+  const topics = buildFactoryTopics(factoryConfig);
+
   return {
-    id: `log_${Array.isArray(address) ? address.join("_") : address}_${chainId}_${childAddressLocation}_${eventSelector}_${fromBlock ?? "undefined"}_${toBlock ?? "undefined"}`,
+    id: `log_${Array.isArray(address) ? address.join("_") : address}_${chainId}_${childAddressLocation}_${eventSelector}_${fromBlock ?? "undefined"}_${toBlock ?? "undefined"}${topics === undefined ? "" : `_${topics.map((topic) => topic ?? "null").join("_")}`}`,
     type: "log",
     chainId,
     sourceId,
     address,
     eventSelector,
+    ...(topics === undefined ? {} : { topics }),
     childAddressLocation,
+    ...(child === undefined ? {} : { child }),
     fromBlock,
     toBlock,
   };
+}
+
+/** Encodes the `filter` option as topic1 to topic3 of the factory event. */
+function buildFactoryTopics({
+  event,
+  filter,
+}: Pick<FactoryConfig, "event" | "filter">): LogFactory["topics"] {
+  if (filter === undefined) return undefined;
+
+  const indexedInputs = event.inputs.filter((input) => input.indexed === true);
+
+  for (const [name, value] of Object.entries(filter)) {
+    if (indexedInputs.every((input) => input.name !== name)) {
+      throw new Error(
+        `Factory filter key is not an indexed factory event parameter. Got '${name}', expected one of [${indexedInputs
+          .map((i) => `'${i.name}'`)
+          .join(", ")}].`,
+      );
+    }
+    if (value === null || value === undefined || Array.isArray(value)) {
+      throw new Error(
+        `Factory filter value for '${name}' must be a single value.`,
+      );
+    }
+  }
+
+  const [, ...encoded] = encodeEventTopics({
+    abi: [event],
+    eventName: event.name,
+    args: filter,
+  } as Parameters<typeof encodeEventTopics>[0]);
+
+  const topics = [0, 1, 2].map((index) => {
+    const topic = encoded[index];
+    return topic === undefined || topic === null || Array.isArray(topic)
+      ? null
+      : (toLowerCase(topic) as Hex);
+  }) as [Hex | null, Hex | null, Hex | null];
+
+  return topics.every((topic) => topic === null) ? undefined : topics;
 }

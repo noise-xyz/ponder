@@ -1,7 +1,8 @@
 import type { Abi, GetEventArgs } from "viem";
+import type { Factory } from "./address.js";
 import type { ParseAbiEvent, SafeEventNames } from "./utilityTypes.js";
 
-type FilterArgs<abi extends Abi, event extends string> = GetEventArgs<
+type EventArgs<abi extends Abi, event extends string> = GetEventArgs<
   abi,
   string,
   {
@@ -10,6 +11,15 @@ type FilterArgs<abi extends Abi, event extends string> = GetEventArgs<
     Required: false;
   },
   ParseAbiEvent<abi, event>
+>;
+
+/** An indexed argument can also be a factory: the event then matches only its children. */
+type WithFactoryArgs<args> = args extends readonly unknown[]
+  ? args
+  : { [key in keyof args]?: args[key] | Factory };
+
+type FilterArgs<abi extends Abi, event extends string> = WithFactoryArgs<
+  EventArgs<abi, event>
 >;
 
 export type GetEventFilter<

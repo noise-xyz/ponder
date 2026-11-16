@@ -1,5 +1,5 @@
-import type { AbiEvent, AbiParameter } from "viem";
-import type { LogFactory } from "@/internal/types.js";
+import type { AbiEvent, AbiParameter, AbiParameterToPrimitiveType } from "viem";
+import type { FactoryChild, LogFactory } from "@/internal/types.js";
 
 // Note: Currently limit the depth to 1 level.
 type ParameterNames<T extends AbiParameter> = T extends {
@@ -12,11 +12,20 @@ type ParameterNames<T extends AbiParameter> = T extends {
     : `${T["name"]}.${T["components"][number]["name"]}`
   : T["name"];
 
+type FactoryFilter<event extends AbiEvent> = {
+  [input in Extract<
+    event["inputs"][number],
+    { indexed: true; name: string }
+  > as input["name"]]?: AbiParameterToPrimitiveType<input>;
+};
+
 export type Factory<event extends AbiEvent = AbiEvent> = {
   /** Address of the factory contract that creates this contract. */
   address?: `0x${string}` | readonly `0x${string}`[];
   /** ABI event that announces the creation of a new instance of this contract. */
   event: event;
+  /** Values of indexed factory event parameters. Only a matching factory event announces a child. */
+  filter?: FactoryFilter<event>;
   /** From block */
   startBlock?: number | "latest";
   /** To block */
@@ -34,7 +43,23 @@ export type Factory<event extends AbiEvent = AbiEvent> = {
        * (e.g. topic or offset) of the child contract address in the factory
        * event. Most users should prefer `parameter` instead.
        */
-      location: LogFactory["childAddressLocation"];
+      location: Exclude<LogFactory["childAddressLocation"], `child:${string}`>;
+    }
+  | {
+      parameter?: never;
+      location?: never;
+      /**
+       * Picks the child from the factory event's transaction and receipt, for a
+       * child that no single event parameter names. The child can be an address
+       * or a topic value. Ponder fetches the receipt of every matching factory event.
+       */
+      child: FactoryChild;
+      /**
+       * Names the rules of `child`. Change it whenever `child` would pick a different
+       * child, so that children from the old rules are not reused. Letters, digits,
+       * `.`, `-` and `:` only.
+       */
+      childId: string;
     }
 );
 

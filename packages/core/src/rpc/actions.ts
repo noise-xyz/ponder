@@ -32,6 +32,32 @@ import { PG_BIGINT_MAX, PG_INTEGER_MAX } from "@/utils/pg.js";
 
 export const ADDRESS_CHUNK_SIZE = 50;
 
+/** Topic arrays longer than this, such as factory child topics, are split across requests. */
+export const TOPIC_CHUNK_SIZE = 100;
+
+const chunkLogTopics = (
+  request: Extract<RequestParameters, { method: "eth_getLogs" }>,
+): Extract<RequestParameters, { method: "eth_getLogs" }>[] => {
+  const topics = request.params[0].topics;
+  const index =
+    topics?.findIndex(
+      (topic) => Array.isArray(topic) && topic.length > TOPIC_CHUNK_SIZE,
+    ) ?? -1;
+  if (index === -1) return [request];
+
+  return chunk(topics![index] as Hex[], TOPIC_CHUNK_SIZE).flatMap((values) =>
+    chunkLogTopics({
+      ...request,
+      params: [
+        {
+          ...request.params[0],
+          topics: topics!.map((topic, i) => (i === index ? values : topic)),
+        },
+      ],
+    } as Extract<RequestParameters, { method: "eth_getLogs" }>),
+  );
+};
+
 /**
  * Helper function for "eth_getBlockByNumber" request.
  */
@@ -103,7 +129,7 @@ export const eth_getLogs = async (
     params,
   };
 
-  const requests: Extract<RequestParameters, { method: "eth_getLogs" }>[] =
+  const requests: Extract<RequestParameters, { method: "eth_getLogs" }>[] = (
     Array.isArray(params[0].address)
       ? chunk(params[0].address, ADDRESS_CHUNK_SIZE).map(
           (address) =>
@@ -112,7 +138,8 @@ export const eth_getLogs = async (
               params: [{ ...params[0], address }],
             }) as Extract<RequestParameters, { method: "eth_getLogs" }>,
         )
-      : [request];
+      : [request]
+  ).flatMap(chunkLogTopics);
 
   const responses = await Promise.all(
     requests.map(async (request) => {

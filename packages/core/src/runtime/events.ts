@@ -53,6 +53,7 @@ import {
   isAddressFactory,
   isAddressMatched,
   isBlockFilterMatched,
+  isLogFilterChildMatched,
   isLogFilterMatched,
   isTraceFilterMatched,
   isTransactionFilterMatched,
@@ -484,13 +485,7 @@ export const buildEvents = ({
       const filter = eventCallbacks[logEventCallbackIndex]!.filter as LogFilter;
       if (
         isLogFilterMatched({ filter, log }) &&
-        (isAddressFactory(filter.address)
-          ? isAddressMatched({
-              address: log.address,
-              blockNumber,
-              childAddresses: childAddresses.get(filter.address.id)!,
-            })
-          : true)
+        isLogFilterChildMatched({ filter, log, blockNumber, childAddresses })
       ) {
         if (filter.hasTransactionReceipt && transactionReceipt === undefined) {
           throw new Error(

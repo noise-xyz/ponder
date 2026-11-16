@@ -1,4 +1,10 @@
-import { type Address, type Hex, hexToNumber, numberToHex } from "viem";
+import {
+  type Address,
+  type Hex,
+  hexToNumber,
+  type LogTopic,
+  numberToHex,
+} from "viem";
 import type {
   BlockFilter,
   Factory,
@@ -112,6 +118,32 @@ const mergeLogFilterValue = <value extends Hex>(
       ];
 
 /**
+ * Returns the `eth_getLogs` topics of `filter`, with its child topic set to the
+ * factory's known children, or `undefined` if the factory has no child yet.
+ *
+ * @dev Children of a child topic are never dropped above
+ * `factoryAddressCountThreshold`: without them the request would match the
+ * event of every contract at the filter's address.
+ */
+export const getLogFilterTopics = (
+  filter: LogFilter,
+  childAddresses: ChildAddresses,
+): LogTopic[] | undefined => {
+  const topics: LogTopic[] = [
+    filter.topic0,
+    filter.topic1 ?? null,
+    filter.topic2 ?? null,
+    filter.topic3 ?? null,
+  ];
+  if (filter.childTopic === undefined) return sanitizeLogTopics(topics);
+
+  const children = childAddresses.get(filter.childTopic.factory.id)!;
+  if (children.size === 0) return undefined;
+  topics[filter.childTopic.index] = Array.from(children.keys());
+  return sanitizeLogTopics(topics);
+};
+
+/**
  * Merge `LogFilter`s into the smallest possible set of "eth_getLogs" requests.
  *
  * @dev Two filters are merged into a single request when:
@@ -148,17 +180,15 @@ export const mergeLogFiltersToRequests = (
       address = filter.address;
     }
 
+    const topics = getLogFilterTopics(filter, childAddresses);
+    if (topics === undefined) continue;
+
     const candidate: EthGetLogsRequest = {
       method: "eth_getLogs",
       params: [
         {
           address,
-          topics: sanitizeLogTopics([
-            filter.topic0,
-            filter.topic1 ?? null,
-            filter.topic2 ?? null,
-            filter.topic3 ?? null,
-          ]),
+          topics,
           fromBlock: numberToHex(interval[0]),
           toBlock: numberToHex(interval[1]),
         },
@@ -260,6 +290,42 @@ const fromLogFilterValues = (values: Hex[] | undefined): Hex[] | null => {
  *
  * @dev A dimension with more than `ADDRESS_CHUNK_SIZE` values matches all values.
  */
+/**
+ * Returns `filter` with its factory address replaced by the factory's children
+ * born by `blockNumber`, so a block request asks only for their logs. Pass
+ * `childAddresses` only when it holds every child that can log in the block;
+ * otherwise, or at `factoryAddressCountThreshold` children, `filter` is
+ * returned unchanged.
+ */
+export const toKnownChildrenLogFilter = ({
+  filter,
+  childAddresses,
+  blockNumber,
+  factoryAddressCountThreshold,
+}: {
+  filter: LogFilter;
+  childAddresses: ChildAddresses | undefined;
+  blockNumber: number;
+  factoryAddressCountThreshold: number;
+}): LogFilter => {
+  if (
+    childAddresses === undefined ||
+    isAddressFactory(filter.address) === false
+  ) {
+    return filter;
+  }
+
+  const children = childAddresses.get(filter.address.id)!;
+  if (children.size >= factoryAddressCountThreshold) return filter;
+
+  return {
+    ...filter,
+    address: Array.from(children)
+      .filter(([, childBlockNumber]) => childBlockNumber <= blockNumber)
+      .map(([address]) => address),
+  };
+};
+
 export const mergeLogFiltersToBlockRequest = ({
   logFilters,
   factories,
@@ -302,9 +368,9 @@ export const mergeLogFiltersToBlockRequest = ({
 
     add(toLogFilterValues(factory.address), [
       [factory.eventSelector],
-      undefined,
-      undefined,
-      undefined,
+      ...(factory.topics ?? [undefined, undefined, undefined]).map((topic) =>
+        toLogFilterValues(topic),
+      ),
     ]);
   }
 
@@ -360,6 +426,48 @@ export const isAddressMatched = ({
   return childBlockNumber !== undefined && childBlockNumber <= blockNumber;
 };
 
+/**
+ * Returns `true` if the factory parts of `filter`, a factory address and a
+ * child topic, match `log`. The other parts are matched by {@link isLogFilterMatched}.
+ */
+export const isLogFilterChildMatched = ({
+  filter,
+  log,
+  blockNumber,
+  childAddresses,
+}: {
+  filter: LogFilter;
+  log: { address: Address; topics: (Hex | null)[] | readonly Hex[] };
+  blockNumber: number;
+  childAddresses: ChildAddresses;
+}): boolean => {
+  if (
+    isAddressFactory(filter.address) &&
+    isAddressMatched({
+      address: log.address,
+      blockNumber,
+      childAddresses: childAddresses.get(filter.address.id)!,
+    }) === false
+  ) {
+    return false;
+  }
+
+  if (
+    filter.childTopic !== undefined &&
+    isAddressMatched({
+      address: (log.topics[filter.childTopic.index] ?? undefined) as
+        | Address
+        | undefined,
+      blockNumber,
+      childAddresses: childAddresses.get(filter.childTopic.factory.id)!,
+    }) === false
+  ) {
+    return false;
+  }
+
+  return true;
+};
+
 const isValueMatched = <T extends string>(
   filterValue: T | T[] | null | undefined,
   eventValue: T | undefined,
@@ -405,6 +513,13 @@ export const isLogFactoryMatched = ({
   }
   if (log.topics.length === 0) return false;
   if (factory.eventSelector !== toLowerCase(log.topics[0]!)) return false;
+  if (
+    factory.topics?.some(
+      (topic, index) =>
+        isValueMatched(topic, log.topics[index + 1] ?? undefined) === false,
+    )
+  )
+    return false;
   if (
     factory.fromBlock !== undefined &&
     (typeof log.blockNumber === "number"
@@ -610,6 +725,9 @@ export const getFilterFactories = (filter: Filter): Factory[] => {
       if (isAddressFactory(filter.address)) {
         factories.push(filter.address);
       }
+      if (filter.childTopic !== undefined) {
+        factories.push(filter.childTopic.factory);
+      }
       break;
     case "trace":
     case "transfer":
@@ -632,6 +750,9 @@ export const getFilterFromBlock = (filter: Filter): number => {
     case "log":
       if (isAddressFactory(filter.address)) {
         blocks.push(filter.address.fromBlock ?? 0);
+      }
+      if (filter.childTopic !== undefined) {
+        blocks.push(filter.childTopic.factory.fromBlock ?? 0);
       }
       break;
     case "transaction":
@@ -658,6 +779,11 @@ export const getFilterToBlock = (filter: Filter): number => {
     case "log":
       if (isAddressFactory(filter.address)) {
         blocks.push(filter.address.toBlock ?? Number.POSITIVE_INFINITY);
+      }
+      if (filter.childTopic !== undefined) {
+        blocks.push(
+          filter.childTopic.factory.toBlock ?? Number.POSITIVE_INFINITY,
+        );
       }
       break;
     case "transaction":

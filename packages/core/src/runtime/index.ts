@@ -195,10 +195,10 @@ export async function getChildAddresses(params: {
   for (const filter of params.filters) {
     switch (filter.type) {
       case "log":
-        if (isAddressFactory(filter.address)) {
+        for (const factory of getFilterFactories(filter)) {
           childAddresses.set(
-            filter.address.id,
-            await getFactoryChildAddresses(filter.address),
+            factory.id,
+            await getFactoryChildAddresses(factory),
           );
         }
         break;

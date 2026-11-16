@@ -1,5 +1,6 @@
 import {
   type Address,
+  type Hex,
   parseAbiItem,
   toEventSelector,
   toFunctionSelector,
@@ -261,6 +262,60 @@ test("buildIndexingFunctions() builds topics for event filter", async () => {
     toEventSelector(event0),
   );
   expect((eventCallbacks[0]![0]!.filter as LogFilter).topic1).toEqual(bytes1);
+});
+
+test("buildIndexingFunctions() builds a child topic for a factory event filter argument", async () => {
+  const child = (): Hex => bytes1;
+  const config = createConfig({
+    chains: {
+      mainnet: { id: 1, rpc: `http://127.0.0.1:8545/${TEST_POOL_ID}` },
+    },
+    contracts: {
+      a: {
+        chain: { mainnet: {} },
+        abi: [event0],
+        filter: {
+          event: "Event0",
+          args: {
+            arg: factory({
+              address: address3,
+              event: eventFactory,
+              filter: { child: address1 },
+              child,
+              childId: "pools.v1",
+            }),
+          },
+        },
+        address: address1,
+        startBlock: 16370000,
+        endBlock: 16370020,
+      },
+    },
+  });
+
+  const configBuild = buildConfig({
+    common: context.common,
+    config,
+  });
+  const { eventCallbacks } = await buildIndexingFunctions({
+    common: context.common,
+    config,
+    indexingFunctions: [{ name: "a:Event0", fn: () => {} }],
+    configBuild,
+  });
+
+  const filter = eventCallbacks[0]![0]!.filter as LogFilter;
+  expect(filter.address).toBe(address1);
+  expect(filter.topic1).toBeNull();
+  expect(filter.childTopic?.index).toBe(1);
+  expect(filter.childTopic?.factory).toMatchObject({
+    address: address3,
+    eventSelector: toEventSelector(eventFactory),
+    childAddressLocation: "child:pools.v1",
+    child,
+    fromBlock: 16370000,
+    toBlock: 16370020,
+  });
 });
 
 test("buildIndexingFunctions() builds topics for multiple event filters", async () => {
