@@ -523,6 +523,11 @@ export async function buildIndexingFunctions({
       // left unset, so `buildTopics` encodes only the other arguments.
       const staticEventFilters = [] as typeof eventFilters;
       for (const filter of eventFilters) {
+        if (Array.isArray(filter.args)) {
+          staticEventFilters.push(filter);
+          continue;
+        }
+
         const abiEvent = source.abi.find(
           (item): item is AbiEvent =>
             item.type === "event" &&
